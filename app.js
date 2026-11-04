@@ -17,6 +17,7 @@
   var CURRENT_ID_KEY = 'mychat_current_id';  // 当前选中会话的 id
   var LAST_MODIFIED_KEY = 'mychat_last_modified'; // 全局最后修改时间戳（毫秒）
   var LAST_SYNCED_CLOUD_STAMP_KEY = 'mychat_last_synced_cloud_stamp'; // 本设备云端一致性基准，不云同步
+  var LAST_BACKUP_MAINT_AT_KEY = 'mychat_last_backup_maint_at'; // 本设备快照维护冷却，不云同步
   var THEME_KEY = 'mychat_theme';            // 主题偏好：light | dark
   var VIEW_KEY = 'mychat_view';              // 视图偏好：bubble | wide
   var CHAT_PARAMS_KEY = 'mychat_chat_params';        // 对话参数（云端同步预留槽位）
@@ -45,6 +46,7 @@
 
   // 初始化尚未完成：期间不因渠道 / 模型兜底写入而刷新时间戳
   var isBooting = true;
+  var isStartupSyncSettled = false; // 首次云端对表结束前冻结时间戳与自动上传
 
   // 快捷选择器 option 值的分隔符（渠道 id 与模型 id 之间）
   var MODEL_SEP = '||';
@@ -886,8 +888,9 @@
       if (!isBooting && !applyingCloudData) scheduleCloudUpload();
     },
     getQuickReplies: function () { return readStorageValue(QUICK_REPLIES_KEY); },
-    saveQuickReplies: function (data) {
+    saveQuickReplies: function (data, options) {
       localStorage.setItem(QUICK_REPLIES_KEY, JSON.stringify(data));
+      if (options && options.silent === true) return;
       touchLastModified();
       if (!isBooting && !applyingCloudData) scheduleCloudUpload();
     },
@@ -1078,13 +1081,16 @@
     saveSession: function (session, options) {
       if (!session || getSession(session.id) !== session) return false;
       var background = options && options.background === true;
-      session.updatedAt = Date.now();
+      var quiet = (options && options.silent === true) || isBooting || applyingCloudData || !isStartupSyncSettled;
+      if (!quiet) session.updatedAt = Date.now();
       if (Array.isArray(session.subChats) && session.subChats.length) {
-        syncActiveSubMessages(session, !background);
+        syncActiveSubMessages(session, !background && !quiet);
       }
-      if (flushSave() === false) return false;
-      touchLastModified();
-      if (!isBooting && !applyingCloudData) scheduleCloudUpload();
+      if ((quiet ? persistSessions() : flushSave()) === false) return false;
+      if (!quiet) {
+        touchLastModified();
+        scheduleCloudUpload();
+      }
       try {
         renderSessionList();
         // 后台元数据落盘不重绘聊天，避免打断当前流式回复与输入。
@@ -2998,6 +3004,7 @@
    * 新建会话 / 删除会话 / 发送消息 / AI 回复完成时都必须调用
    */
   function touchLastModified() {
+    if (isBooting || applyingCloudData || !isStartupSyncSettled) return getLocalLastModified();
     var now = Date.now();
     try {
       localStorage.setItem(LAST_MODIFIED_KEY, String(now));
@@ -3013,7 +3020,7 @@
    * 避免本地已有聊天记录却被云端数据直接覆盖。
    */
   function ensureLocalLastModified() {
-    if (getLocalLastModified() > 0) return;
+    if (isBooting || applyingCloudData || !isStartupSyncSettled || getLocalLastModified() > 0) return;
 
     var maxStamp = 0;
     var hasMessage = false;
@@ -11301,8 +11308,10 @@
   }
 
   var cachedGistFiles = null; // 已知云端文件字典，仅驻留内存
-  var lastBackupUploadAt = 0; // 最近一次快照维护成功时间
+  var lastBackupUploadAt = 0; // 最近一次快照维护成功时间，刷新后沿用本地冷却
+  try { lastBackupUploadAt = Number(localStorage.getItem(LAST_BACKUP_MAINT_AT_KEY) || 0) || 0; } catch (e) {}
   var cachedGistIdentity = ''; // 切换平台、令牌或 Gist 时隔离缓存
+  var cachedGistIdentityInitialized = false;
 
   // 全局同步互斥锁：上传 / 拉取期间忽略重复点击，防止接口限流
   var isSyncing = false;
@@ -11562,6 +11571,8 @@
     } else if (syncState === 'error') {
       textEl.textContent = '同步失败';
       els.syncStatusBtn.classList.add('state-error');
+    } else if (syncState === '已暂停同步') {
+      textEl.textContent = '已暂停同步';
     } else {
       textEl.textContent = '云同步';
     }
@@ -11792,11 +11803,14 @@
   }
 
   async function parseCloudPayloadAsync(rawContent) {
+    if (typeof rawContent === 'string' && !rawContent.trim()) return null;
     try {
-      return parseCloudPayload(await decryptCloudContentAsync(rawContent));
+      var payload = parseCloudPayload(await decryptCloudContentAsync(rawContent));
+      if (!payload) throw new Error('无效云端载荷');
+      return payload;
     } catch (decErr) {
-      console.warn('[云同步] 云端数据解密失败：', decErr);
-      return null;
+      console.warn('[云同步] 云端数据解密或解析失败：', decErr);
+      throw new Error('云端数据解析失败，已中止同步以保护云端数据');
     }
   }
 
@@ -11812,7 +11826,12 @@
     if (identity !== cachedGistIdentity) {
       cachedGistIdentity = identity;
       cachedGistFiles = null;
-      lastBackupUploadAt = 0;
+      // 初次绑定缓存身份不清空持久化冷却；真实切换连接才重置。
+      if (lastBackupUploadAt && cachedGistIdentityInitialized) {
+        lastBackupUploadAt = 0;
+        try { localStorage.removeItem(LAST_BACKUP_MAINT_AT_KEY); } catch (e) {}
+      }
+      cachedGistIdentityInitialized = true;
     }
     if (config.gistId) return config.gistId;
 
@@ -12182,7 +12201,10 @@
     if (!file) return { payload: null };
 
     var content = await readGistFileContent(file);
-    return { payload: await parseGistCloudContent(content, cachedGistFiles) };
+    if (!content.trim()) return { payload: null };
+    var payload = await parseGistCloudContent(content, cachedGistFiles);
+    if (!payload) throw new Error('云端数据解析失败，已中止同步以保护云端数据');
+    return { payload: payload };
   }
 
   async function parseGistCloudContent(content, files) {
@@ -12244,7 +12266,7 @@
 
       var now = Date.now();
       var maintainBackup = isManualPush === true || now - lastBackupUploadAt >= 30 * 60 * 1000;
-      var automaticPush = !isManualPush && !fromSync;
+      var automaticPush = !isManualPush;
       // 自动上传必须刷新远端主文件，缓存不能作为版本门禁依据。
       if (automaticPush || !cachedGistFiles || now - lastBackupUploadAt >= 30 * 60 * 1000) {
         var detail = await gistRequest('/' + encodeURIComponent(gistId), 'GET');
@@ -12258,12 +12280,12 @@
           return typeof remoteStats[key] === 'number' && Number.isFinite(remoteStats[key]) && remoteStats[key] >= 0;
         })) {
           var oldPayload = await parseGistCloudContent(mainContent, cachedGistFiles);
-          if (!oldPayload) throw new Error('云端数据无效，已停止自动上传');
-          remoteStats = computeCloudDataStats(oldPayload);
+          if (!oldPayload && mainContent.trim()) throw new Error('云端数据解析失败，已中止同步以保护云端数据');
+          remoteStats = computeCloudDataStats(oldPayload || {});
         }
         var localStats = computeLocalDataStats();
         var lastSyncedStamp = Number(localStorage.getItem(LAST_SYNCED_CLOUD_STAMP_KEY) || 0);
-        if (remoteStats.lastModified > lastSyncedStamp || remoteStats.totalMessages > localStats.totalMessages + 5) {
+        if ((lastSyncedStamp > 0 && remoteStats.lastModified > lastSyncedStamp) || remoteStats.totalMessages > localStats.totalMessages) {
           // 不在当前上传锁内递归同步；释放锁后再执行安全裁决。
           queueCloudSync(false);
           return;
@@ -12332,12 +12354,14 @@
           });
           cachedGistFiles = Object.assign({}, backupRes.files || cachedGistFiles);
           lastBackupUploadAt = Date.now();
+          try { localStorage.setItem(LAST_BACKUP_MAINT_AT_KEY, String(lastBackupUploadAt)); } catch (e) {}
           console.log('[云同步] 快照备份已更新，清理旧备份 ' + removed + ' 个');
         } catch (backupErr) {
           console.warn('[云同步] 快照备份更新跳过：', backupErr);
         }
       } else {
         lastBackupUploadAt = Date.now();
+        try { localStorage.setItem(LAST_BACKUP_MAINT_AT_KEY, String(lastBackupUploadAt)); } catch (e) {}
       }
     } catch (err) {
       handleSyncError(err);
@@ -12386,11 +12410,12 @@
   }
 
   function scheduleCloudUpload() {
-    if (!config.autoSync || applyingCloudData || !isSyncConfigured()) return;
+    if (isBooting || applyingCloudData || !isStartupSyncSettled) return;
+    if (!config.autoSync || !isSyncConfigured()) return;
     if (uploadTimer) clearTimeout(uploadTimer);
     uploadTimer = setTimeout(function () {
       uploadTimer = null;
-      if (config.autoSync && !applyingCloudData) uploadToCloud(false);
+      if (config.autoSync && !isBooting && !applyingCloudData && isStartupSyncSettled) uploadToCloud(false);
     }, UPLOAD_DELAY_MS);
   }
 
@@ -12400,8 +12425,9 @@
    * @param {boolean} retried 是否已因 Gist 失效重试过
    */
   async function syncWithCloud(silent, retried) {
-    if (silent && !config.autoSync) return;
+    if (silent && !config.autoSync) { isStartupSyncSettled = true; return; }
     if (!isSyncConfigured()) {
+      isStartupSyncSettled = true;
       renderSyncStatus();
       if (!silent) {
         await window.showAppAlert('请先填写云端访问令牌');
@@ -12445,7 +12471,7 @@
       // 本机还没有任何聊天内容（例如手机刚填好 Token）：
       // 直接采用云端数据，避免空数据把电脑上的历史记录覆盖掉
       if (remoteHasMeaningfulData(remote.payload) && !hasMeaningfulLocalData()) {
-        applyCloudData(remote.payload, { source: 'cloud' });
+        await applyCloudData(remote.payload, { source: 'cloud' });
         lastSyncAt = Date.now();
         setSyncStatus('ok');
         console.log('[云同步] 本机无聊天记录，已拉取云端数据');
@@ -12454,30 +12480,34 @@
 
       if (remoteStamp > localStamp) {
         // 另一台设备有新记录：云端覆盖本地
-        applyCloudData(remote.payload, { source: 'cloud' });
+        await applyCloudData(remote.payload, { source: 'cloud' });
         lastSyncAt = Date.now();
         setSyncStatus('ok');
         console.log(
           '[云同步] 云端数据更新，已覆盖本地（云端 ' + remoteStamp + ' / 本地 ' + localStamp + '）'
         );
       } else if (localStamp > remoteStamp) {
-        var suspicious = (lastSyncedStamp > 0 && remoteStamp > lastSyncedStamp) ||
-          remoteStats.totalMessages - localStats.totalMessages >= 10 ||
+        var suspicious = (lastSyncedStamp === 0 && remoteHasMeaningfulData(remote.payload)) ||
+          (lastSyncedStamp > 0 && remoteStamp !== lastSyncedStamp) ||
+          remoteStats.totalMessages > localStats.totalMessages ||
           remoteStats.sessionCount > localStats.sessionCount;
         if (suspicious) {
-          var preferCloud = await window.showAppConfirm('检测到云端数据包含更多内容或已在其他设备更新：\n• 云端：' + remoteStats.sessionCount + ' 个会话 / 共 ' + remoteStats.totalMessages + ' 层消息\n• 本地：' + localStats.sessionCount + ' 个会话 / 共 ' + localStats.totalMessages + ' 层消息\n\n是否优先拉取云端最新数据？（点击「确定」拉取云端安全同步；点击「取消」强制用本地覆盖云端）');
+          var preferCloud = await window.showAppConfirm('检测到云端与本机数据存在版本差异：\n• 云端：' + remoteStats.sessionCount + ' 个会话 / 共 ' + remoteStats.totalMessages + ' 层消息\n• 本机：' + localStats.sessionCount + ' 个会话 / 共 ' + localStats.totalMessages + ' 层消息\n\n点击「确定」拉取云端最新数据覆盖本机；点击「取消」暂不同步（保留本机现状，不覆盖云端）。');
+          if (!preferCloud) { setSyncStatus('已暂停同步', ''); return; }
           if (activeGenerationMap.size > 0) { queueCloudSync(silent); return; }
           if (preferCloud) {
-            applyCloudData(remote.payload, { source: 'cloud' });
+            await applyCloudData(remote.payload, { source: 'cloud' });
             lastSyncAt = Date.now();
             setSyncStatus('ok');
-          } else {
-            await doUploadToCloud(true, true);
           }
         } else {
           await doUploadToCloud(true);
         }
       } else {
+        // 同时间戳但云端内容更多仍须拉取，不能误记为已对齐。
+        if (remoteStats.totalMessages > localStats.totalMessages || remoteStats.sessionCount > localStats.sessionCount) {
+          await applyCloudData(remote.payload, { source: 'cloud' });
+        }
         // 时间戳一致：记录本设备已经对齐的云端基准。
         localStorage.setItem(LAST_SYNCED_CLOUD_STAMP_KEY, String(remoteStamp));
         lastSyncAt = Date.now();
@@ -12494,12 +12524,13 @@
         persistConfig(true);
         syncInFlight = false;
         isSyncing = false;
-        return syncWithCloud(silent, true);
+        return await syncWithCloud(silent, true);
       }
       handleSyncError(err);
     } finally {
       syncInFlight = false;
       isSyncing = false;
+      isStartupSyncSettled = true;
     }
   }
 
@@ -13432,7 +13463,7 @@
 
   /* ================= 初始化 ================= */
 
-  function init() {
+  async function init() {
     // 跟随软键盘与可视视口，桌面端继续使用原有布局。
     function updateVisualViewport() {
       var viewport = window.visualViewport;
@@ -13459,7 +13490,7 @@
     loadSessions();
     // 模块化系统提示词预设库：早于首次渲染，保证顶部入口高亮状态正确
     loadPromptPresets();
-    ensureLocalLastModified(); // 旧数据升级时补一个初始全局时间戳
+    ensureLocalLastModified(); // 启动保护期间不补写全局时间戳
 
     // 主题 / 视图偏好：必须在首次渲染前应用，避免闪烁
     loadUiPrefs();
@@ -13475,15 +13506,17 @@
     restoreInputDraft();
     if (els.input) els.input.focus();
 
-    // 云同步：先恢复按钮显示，再尝试一次静默双向同步（打开软件即同步）
+    // 本地迁移与巡检必须在启动锁内完成，不能抢在首次云端对表前刷新版本。
+    if (window.MemorySummaryModule) window.MemorySummaryModule.migrateLegacyMemory();
+    refreshMemoryContext();
     setSyncStatus('idle');
-    if (isSyncConfigured()) syncWithCloud(true);
 
     // 每 30 秒刷新「已同步 (x 分钟前)」的相对时间
     setInterval(renderSyncStatus, 30 * 1000);
 
     // 初始化收尾：此后渠道 / 模型变更才允许刷新时间戳并触发自动上传
     isBooting = false;
+    await syncWithCloud(true);
   }
 
   window.addEventListener('mychat-provider-defaults-ready', function () {
@@ -13497,10 +13530,8 @@
     event.preventDefault();
     event.returnValue = '';
   });
-  window.MyChatStorageReady = preloadLargeStorage().then(function () {
-  init();
-    if (window.MemorySummaryModule) window.MemorySummaryModule.migrateLegacyMemory();
-    refreshMemoryContext();
+  window.MyChatStorageReady = preloadLargeStorage().then(async function () {
+    await init();
   }).catch(function (error) {
     console.error('历史数据加载失败：', error);
     window.alert(error.message || '历史数据加载失败');

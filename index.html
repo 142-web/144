@@ -21,7 +21,7 @@
   <title>MyChat</title>
   <!-- 代码高亮深色主题（hljs 官方 atom-one-dark 配色，国内高速镜像） -->
   <link rel="stylesheet" href="https://cdn.staticfile.net/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=20260405_2" />
 </head>
 
 <body>
@@ -946,12 +946,12 @@
   <script src="https://cdn.staticfile.net/marked/12.0.2/marked.min.js"></script>
   <script src="https://cdn.staticfile.net/highlight.js/11.9.0/highlight.min.js"></script>
   <!-- 核心宿主引擎：必须最先加载，负责创建 window.MyChat 桥接器 -->
-  <script src="app.js"></script>
+  <script src="app.js?v=20260405_2"></script>
   <!-- 抓包基础设施：宿主创建后立即可用，早于记忆请求模块 -->
-  <script src="modules/debug-inspector.js"></script>
-  <script src="modules/task-hud.js"></script>
+  <script src="modules/debug-inspector.js?v=20260405_2"></script>
+  <script src="modules/task-hud.js?v=20260405_2"></script>
   <!-- 应用弹窗与全局遮罩守卫：先于其他扩展加载 -->
-  <script src="modules/app-dialogs.js"></script>
+  <script src="modules/app-dialogs.js?v=20260405_2"></script>
 
   <!-- ===== 可复用独立模块区（必须放在 app.js 之后，按依赖顺序引入） =====
        新增扩展模块时在这里追加一行，例如：
@@ -961,22 +961,22 @@
        不允许修改 app.js 核心链路；双击 index.html（file://）也能正常加载。
   -->
   <!-- 世界书模块：工具箱入口 + 管理界面 + 发送前词条注入（@Depth 支持） -->
-  <script src="modules/tavern-macros.js"></script>
-  <script src="modules/worldbook.js"></script>
+  <script src="modules/tavern-macros.js?v=20260405_2"></script>
+  <script src="modules/worldbook.js?v=20260405_2"></script>
   <!-- 记忆总结与 Token 统计：实时 Token 估算 + 世界书二级编号索引记忆库 + 小 AI 检索召回 -->
-  <script src="modules/memory-summary.js"></script>
+  <script src="modules/memory-summary.js?v=20260405_2"></script>
   <!-- 三层正则引擎：全局 / 预设 / 会话正则统一管理，接入 beforeSend / onReceive / onRender 阀门 -->
-  <script src="modules/regex-engine.js"></script>
+  <script src="modules/regex-engine.js?v=20260405_2"></script>
   <!-- 酒馆导入器：PNG（tEXt / zTXt / iTXt）角色卡解析 + 角色卡 / 酒馆预设一键导入 -->
-  <script src="modules/tavern-importer.js"></script>
-  <script src="modules/vocab-mapping.js"></script>
-  <script src="modules/quick-replies.js"></script>
-  <script src="modules/external-chat-importer.js"></script>
-  <script src="modules/provider-shortcuts.js"></script>
-  <script src="modules/feature-help.js"></script>
-  <script src="modules/chat-navigation.js"></script>
-  <script src="modules/attachments.js"></script>
-  <script src="modules/auto-retry.js"></script>
+  <script src="modules/tavern-importer.js?v=20260405_2"></script>
+  <script src="modules/vocab-mapping.js?v=20260405_2"></script>
+  <script src="modules/quick-replies.js?v=20260405_2"></script>
+  <script src="modules/external-chat-importer.js?v=20260405_2"></script>
+  <script src="modules/provider-shortcuts.js?v=20260405_2"></script>
+  <script src="modules/feature-help.js?v=20260405_2"></script>
+  <script src="modules/chat-navigation.js?v=20260405_2"></script>
+  <script src="modules/attachments.js?v=20260405_2"></script>
+  <script src="modules/auto-retry.js?v=20260405_2"></script>
 </body>
 
 </html>

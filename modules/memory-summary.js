@@ -302,13 +302,13 @@
     return m;
   }
 
-  function saveSession(session) {
+  function saveSession(session, options) {
     try {
       (session.subChats && session.subChats.length ? session.subChats : [session]).forEach(function (owner) {
         if (owner.memoryData) compactMemorySnapshots(owner.memoryData);
       });
       if (typeof bridge.saveSession === 'function') {
-        return bridge.saveSession(session, { background: true }) !== false;
+        return bridge.saveSession(session, { background: true, silent: !!(options && options.silent) }) !== false;
       }
     } catch (err) {
       console.warn('[记忆总结] 会话保存失败：', err);
@@ -2281,7 +2281,7 @@
       getMeta(session);
       if (JSON.stringify(session.memoryMeta) !== configBefore) changed = true;
       // 全量恢复由宿主事务统一落盘，不能在迁移中另开保存链路。
-      if (changed && options.persist !== false && !saveSession(session)) throw new Error('历史记忆迁移保存失败');
+      if (changed && options.persist !== false && !saveSession(session, { silent: true })) throw new Error('历史记忆迁移保存失败');
     });
     // 未绑定的历史库保留在底层备份中，但世界书管理器始终排除记忆标记。
     if (window.MyChatWorldbook) window.MyChatWorldbook.reload();

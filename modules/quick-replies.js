@@ -17,8 +17,8 @@
     }).filter(function (item) { return item && typeof item.text === 'string' && item.text.trim(); }).map(function (item) { return { id: item.id || uid(), text: item.text }; }) };
   }
   function reload() { data = normalize(M.getQuickReplies()); render(); }
-  function save() {
-    try { M.saveQuickReplies(data); render(); return true; }
+  function save(options) {
+    try { M.saveQuickReplies(data, options); render(); return true; }
     catch (err) { void window.showAppAlert('保存失败：' + err.message); reload(); return false; }
   }
   function close() { panel.hidden = true; btn.setAttribute('aria-expanded', 'false'); }
@@ -145,5 +145,5 @@
   window.MyChatQuickReplies = { reload: reload, close: close };
   reload();
   // 首次预置只持久化一次，不在云端恢复时覆盖显式空列表。
-  if (M.getQuickReplies() === null) save();
+  if (M.getQuickReplies() === null) save({ silent: true });
 })();
