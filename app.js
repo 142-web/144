@@ -16,6 +16,7 @@
   var SESSIONS_KEY = 'mychat_sessions';      // 全部会话（数组）
   var CURRENT_ID_KEY = 'mychat_current_id';  // 当前选中会话的 id
   var LAST_MODIFIED_KEY = 'mychat_last_modified'; // 全局最后修改时间戳（毫秒）
+  var LAST_SYNCED_CLOUD_STAMP_KEY = 'mychat_last_synced_cloud_stamp'; // 本设备云端一致性基准，不云同步
   var THEME_KEY = 'mychat_theme';            // 主题偏好：light | dark
   var VIEW_KEY = 'mychat_view';              // 视图偏好：bubble | wide
   var CHAT_PARAMS_KEY = 'mychat_chat_params';        // 对话参数（云端同步预留槽位）
@@ -11262,6 +11263,42 @@
   var syncInFlight = false;   // 是否有同步请求正在进行，避免重复请求
   var uploadInFlight = false; // 是否有上传请求正在进行，避免并发覆盖
   var uploadTimer = null;     // 1 秒延迟上传计时器
+  var pendingCloudSync = false; // 前台同步被生成或锁阻挡时合并补跑
+  var pendingCloudSyncSilent = true;
+  var cloudSyncRetryTimer = null;
+
+  function queueCloudSync(silent) {
+    pendingCloudSync = true;
+    if (silent === false) pendingCloudSyncSilent = false;
+    if (cloudSyncRetryTimer) return;
+    cloudSyncRetryTimer = setTimeout(function retry() {
+      cloudSyncRetryTimer = null;
+      if (!pendingCloudSync) return;
+      if (!isSyncConfigured() || (pendingCloudSyncSilent && !config.autoSync)) {
+        pendingCloudSync = false;
+        pendingCloudSyncSilent = true;
+        return;
+      }
+      if (activeGenerationMap.size > 0 || isSyncing || syncInFlight || uploadInFlight || applyingCloudData) {
+        cloudSyncRetryTimer = setTimeout(retry, 250);
+        return;
+      }
+      var silentRun = pendingCloudSyncSilent;
+      pendingCloudSync = false;
+      pendingCloudSyncSilent = true;
+      syncWithCloud(silentRun);
+    }, 250);
+  }
+
+  function requestForegroundCloudSync() {
+    if (!isSyncConfigured() || !config.autoSync) return;
+    if (lastSyncAt && Date.now() - lastSyncAt < 5000) return;
+    if (activeGenerationMap.size > 0 || isSyncing || syncInFlight || uploadInFlight || applyingCloudData) {
+      queueCloudSync(true);
+      return;
+    }
+    syncWithCloud(true);
+  }
 
   var cachedGistFiles = null; // 已知云端文件字典，仅驻留内存
   var lastBackupUploadAt = 0; // 最近一次快照维护成功时间
@@ -11371,7 +11408,7 @@
   }
 
   // 压缩失败明确报错并终止上传，禁止降级为未压缩的巨型请求。
-  async function encryptCloudContentAsync(jsonText) {
+  async function encryptCloudContentAsync(jsonText, metaObj) {
     try {
       var rawStr = String(jsonText || '');
       var compressedStream = new Blob([rawStr]).stream().pipeThrough(new CompressionStream('gzip'));
@@ -11380,7 +11417,7 @@
       var b64 = uint8ToBase64Fast(compressedBytes);
       var obfuscated = swapBase64Halves(b64);
       console.log('[云同步] Gzip 压缩生效：原始 ' + Math.round(rawStr.length / 1024) + 'KB -> 压缩后 ' + Math.round(obfuscated.length / 1024) + 'KB');
-      return JSON.stringify({ _encrypted: true, _compressed: 'gzip_v2', payload: obfuscated });
+      return JSON.stringify({ _encrypted: true, _compressed: 'gzip_v2', payload: obfuscated, _meta: metaObj || null });
     } catch (err) {
       console.error('[云同步] Gzip 压缩异常降级：', err);
       throw err;
@@ -11420,9 +11457,11 @@
       chunks.forEach(function (chunk, i) {
         files[SYNC_CHUNK_PREFIX + i + '.dat'] = { content: chunk };
       });
-      var stamp = getLocalLastModified() || Date.now();
+      var wrapper = safeJsonParse(encryptedStr);
+      var meta = wrapper && wrapper._meta || null;
+      var stamp = meta ? meta.lastModified : getLocalLastModified() || Date.now();
       files[SYNC_FILE_NAME] = { content: JSON.stringify({
-        _chunked: true, totalChunks: chunks.length, lastModified: stamp
+        _chunked: true, totalChunks: chunks.length, lastModified: stamp, _meta: meta
       }) };
     }
     Object.keys(existingFiles || {}).forEach(function (name) {
@@ -11443,19 +11482,42 @@
    * 本地是否已有真实聊天内容（至少一条消息）
    */
   function hasMeaningfulLocalData() {
-    return sessions.some(function (s) {
-      return !!(s && s.messages && s.messages.length > 0);
+    return computeLocalDataStats().totalMessages > 0;
+  }
+
+  // 子对话是完整数据源；顶层消息只是活跃分支镜像，不重复计数。
+  function computeCloudDataStats(data) {
+    data = data || {};
+    var list = Array.isArray(data.sessions) ? data.sessions : [];
+    var totalMsgs = 0;
+    list.forEach(function (session) {
+      if (!session) return;
+      var branches = Array.isArray(session.subChats) && session.subChats.length > 0
+        ? session.subChats : [session];
+      branches.forEach(function (subChat) {
+        if (subChat && Array.isArray(subChat.messages)) totalMsgs += subChat.messages.length;
+      });
     });
+    return { lastModified: Number(data.lastModified) || 0, sessionCount: list.length, totalMessages: totalMsgs };
+  }
+
+  function computeLocalDataStats() {
+    return computeCloudDataStats({ lastModified: getLocalLastModified(), sessions: sessions });
+  }
+
+  function createCloudMeta(payload) {
+    return Object.assign(computeCloudDataStats(payload), { updatedAt: Date.now() });
   }
 
   /**
    * 云端数据中是否已有真实聊天内容
    */
   function remoteHasMeaningfulData(payload) {
-    if (!payload || !Array.isArray(payload.sessions)) return false;
-    return payload.sessions.some(function (s) {
-      return !!(s && s.messages && s.messages.length > 0);
-    });
+    if (!payload) return false;
+    return computeCloudDataStats(payload).totalMessages > 0 ||
+      ['promptPresets', 'worldbooks', 'regexRules'].some(function (key) {
+        return Array.isArray(payload[key]) && payload[key].length > 0;
+      });
   }
 
   /**
@@ -11789,9 +11851,8 @@
     if (readOnly) throw new Error('未找到云端数据');
     // 3. 没找到则新建私有 Gist，并写入一份当前数据
     // 注意：这里不刷新全局时间戳，避免仅"创建 Gist"就被判定为本地有新修改
-    var initContent = await encryptCloudContentAsync(
-      JSON.stringify(buildCloudPayload(getLocalLastModified() || Date.now(), true))
-    );
+    var initPayload = buildCloudPayload(getLocalLastModified() || Date.now(), true);
+    var initContent = await encryptCloudContentAsync(JSON.stringify(initPayload), createCloudMeta(initPayload));
     var initFiles = buildSyncedFileMap(initContent, {});
 
     var created = await gistRequest('', 'POST', {
@@ -11808,6 +11869,7 @@
     cachedGistIdentity = JSON.stringify([config.syncPlatform, config.syncToken, config.gistId]);
     cachedGistFiles = Object.assign({}, created.files || initFiles);
     persistConfig(true);
+    localStorage.setItem(LAST_SYNCED_CLOUD_STAMP_KEY, String(initPayload.lastModified));
     console.log('[云同步] 已自动创建私有同步 Gist：' + created.id);
     return config.gistId;
   }
@@ -11980,6 +12042,7 @@
     refreshPresetButtonState();
     refreshTopPresetUI();
     if (subchatModalOpen) renderSubChatList();
+    if (source === 'cloud') localStorage.setItem(LAST_SYNCED_CLOUD_STAMP_KEY, String(Number(payload.lastModified) || 0));
     return collectRestoreStats({ sessions: sessions, promptPresets: promptPresets, worldbooks: readStorageValue(WORLDBOOKS_KEY) });
   }
 
@@ -12119,19 +12182,23 @@
     if (!file) return { payload: null };
 
     var content = await readGistFileContent(file);
+    return { payload: await parseGistCloudContent(content, cachedGistFiles) };
+  }
+
+  async function parseGistCloudContent(content, files) {
     var manifest = safeJsonParse(content);
     if (manifest && manifest._chunked === true) {
       if (!Number.isSafeInteger(manifest.totalChunks) || manifest.totalChunks <= 0 ||
-          manifest.totalChunks > Object.keys(detail.files).length) {
+          manifest.totalChunks > Object.keys(files).length) {
         throw new Error('云端分片清单无效');
       }
       var chunks = [];
       for (var i = 0; i < manifest.totalChunks; i++) {
-        chunks.push(await readGistFileContent(detail.files[SYNC_CHUNK_PREFIX + i + '.dat']));
+        chunks.push(await readGistFileContent(files[SYNC_CHUNK_PREFIX + i + '.dat']));
       }
       content = chunks.join('');
     }
-    return { payload: await parseCloudPayloadAsync(content) };
+    return await parseCloudPayloadAsync(content);
   }
 
   /**
@@ -12149,7 +12216,8 @@
 
     isSyncing = true;
     try {
-      await doUploadToCloud(fromSync);
+      // 此入口是自动上传，不是已完成版本比对的双向同步。
+      await doUploadToCloud(false);
     } finally {
       isSyncing = false;
     }
@@ -12176,10 +12244,30 @@
 
       var now = Date.now();
       var maintainBackup = isManualPush === true || now - lastBackupUploadAt >= 30 * 60 * 1000;
-      // 缓存有效且无需定期维护时，直接 PATCH，避免下载全部聊天与备份。
-      if (!cachedGistFiles || now - lastBackupUploadAt >= 30 * 60 * 1000) {
+      var automaticPush = !isManualPush && !fromSync;
+      // 自动上传必须刷新远端主文件，缓存不能作为版本门禁依据。
+      if (automaticPush || !cachedGistFiles || now - lastBackupUploadAt >= 30 * 60 * 1000) {
         var detail = await gistRequest('/' + encodeURIComponent(gistId), 'GET');
         cachedGistFiles = Object.assign({}, (detail && detail.files) || {});
+      }
+      if (automaticPush && cachedGistFiles[SYNC_FILE_NAME]) {
+        var mainContent = await readGistFileContent(cachedGistFiles[SYNC_FILE_NAME]);
+        var outer = safeJsonParse(mainContent);
+        var remoteStats = outer && outer._meta;
+        if (!remoteStats || !['lastModified', 'sessionCount', 'totalMessages'].every(function (key) {
+          return typeof remoteStats[key] === 'number' && Number.isFinite(remoteStats[key]) && remoteStats[key] >= 0;
+        })) {
+          var oldPayload = await parseGistCloudContent(mainContent, cachedGistFiles);
+          if (!oldPayload) throw new Error('云端数据无效，已停止自动上传');
+          remoteStats = computeCloudDataStats(oldPayload);
+        }
+        var localStats = computeLocalDataStats();
+        var lastSyncedStamp = Number(localStorage.getItem(LAST_SYNCED_CLOUD_STAMP_KEY) || 0);
+        if (remoteStats.lastModified > lastSyncedStamp || remoteStats.totalMessages > localStats.totalMessages + 5) {
+          // 不在当前上传锁内递归同步；释放锁后再执行安全裁决。
+          queueCloudSync(false);
+          return;
+        }
       }
       var existingFiles = cachedGistFiles || {};
       var stamp = getLocalLastModified();
@@ -12189,13 +12277,15 @@
         stamp = getLocalLastModified() || now;
       }
 
-      var content = await encryptCloudContentAsync(JSON.stringify(buildCloudPayload(stamp, true)));
+      var payload = buildCloudPayload(stamp, true);
+      var content = await encryptCloudContentAsync(JSON.stringify(payload), createCloudMeta(payload));
       var mainFiles = buildSyncedFileMap(content, cachedGistFiles || {});
       var patchRes = await gistRequest('/' + encodeURIComponent(gistId), 'PATCH', {
         description: SYNC_GIST_DESC,
         files: mainFiles
       });
       cachedGistFiles = Object.assign({}, patchRes.files || cachedGistFiles);
+      localStorage.setItem(LAST_SYNCED_CLOUD_STAMP_KEY, String(stamp));
       lastSyncAt = Date.now();
       setSyncStatus('ok');
 
@@ -12300,7 +12390,7 @@
     if (uploadTimer) clearTimeout(uploadTimer);
     uploadTimer = setTimeout(function () {
       uploadTimer = null;
-      if (config.autoSync && !applyingCloudData) uploadToCloud(true);
+      if (config.autoSync && !applyingCloudData) uploadToCloud(false);
     }, UPLOAD_DELAY_MS);
   }
 
@@ -12321,12 +12411,14 @@
 
     // 正在生成 AI 回复时不做双向同步，避免云端覆盖打断当前输出
     if (activeGenerationMap.size > 0) {
-      if (!silent) await window.showAppAlert('请等待回复结束');
+      if (silent) queueCloudSync(true);
+      else await window.showAppAlert('请等待回复结束');
       return;
     }
 
-    // 防连点锁：同步进行中忽略重复点击，避免接口限流
-    if (isSyncing || syncInFlight) {
+    // 静默前台请求不能因同步锁而永久丢失。
+    if (isSyncing || syncInFlight || uploadInFlight) {
+      if (silent) queueCloudSync(true);
       console.log('[云同步] 同步进行中，忽略重复触发');
       return;
     }
@@ -12344,8 +12436,11 @@
         return;
       }
 
-      var remoteStamp = remote.payload.lastModified;
-      var localStamp = getLocalLastModified();
+      var remoteStats = computeCloudDataStats(remote.payload);
+      var localStats = computeLocalDataStats();
+      var remoteStamp = remoteStats.lastModified;
+      var localStamp = localStats.lastModified;
+      var lastSyncedStamp = Number(localStorage.getItem(LAST_SYNCED_CLOUD_STAMP_KEY) || 0);
 
       // 本机还没有任何聊天内容（例如手机刚填好 Token）：
       // 直接采用云端数据，避免空数据把电脑上的历史记录覆盖掉
@@ -12366,10 +12461,25 @@
           '[云同步] 云端数据更新，已覆盖本地（云端 ' + remoteStamp + ' / 本地 ' + localStamp + '）'
         );
       } else if (localStamp > remoteStamp) {
-        // 本地更新：上传覆盖云端
-        await doUploadToCloud(true);
+        var suspicious = (lastSyncedStamp > 0 && remoteStamp > lastSyncedStamp) ||
+          remoteStats.totalMessages - localStats.totalMessages >= 10 ||
+          remoteStats.sessionCount > localStats.sessionCount;
+        if (suspicious) {
+          var preferCloud = await window.showAppConfirm('检测到云端数据包含更多内容或已在其他设备更新：\n• 云端：' + remoteStats.sessionCount + ' 个会话 / 共 ' + remoteStats.totalMessages + ' 层消息\n• 本地：' + localStats.sessionCount + ' 个会话 / 共 ' + localStats.totalMessages + ' 层消息\n\n是否优先拉取云端最新数据？（点击「确定」拉取云端安全同步；点击「取消」强制用本地覆盖云端）');
+          if (activeGenerationMap.size > 0) { queueCloudSync(silent); return; }
+          if (preferCloud) {
+            applyCloudData(remote.payload, { source: 'cloud' });
+            lastSyncAt = Date.now();
+            setSyncStatus('ok');
+          } else {
+            await doUploadToCloud(true, true);
+          }
+        } else {
+          await doUploadToCloud(true);
+        }
       } else {
-        // 时间戳一致：已经是最新
+        // 时间戳一致：记录本设备已经对齐的云端基准。
+        localStorage.setItem(LAST_SYNCED_CLOUD_STAMP_KEY, String(remoteStamp));
         lastSyncAt = Date.now();
         setSyncStatus('ok');
       }
@@ -13311,11 +13421,9 @@
       }
       scrollToBottom();
 
-      if (!isSyncConfigured() || syncInFlight) return;
-      // 30 秒内不重复触发，避免频繁请求接口
-      if (lastSyncAt && Date.now() - lastSyncAt < 30000) return;
-      syncWithCloud(true);
+      requestForegroundCloudSync();
     });
+    window.addEventListener('focus', requestForegroundCloudSync);
     window.addEventListener('pagehide', function () {
       captureInputDraft();
       flushSave();
