@@ -5085,7 +5085,7 @@ body {
   }
 }
 
-/* 窄屏：隐藏顶部预设名称文字，仅保留 #0 徽标与图标 */
+/* 窄屏保留预设名称，由横向轨道承载完整按钮。 */
 @media (max-width: 720px) {
   .top-preset-trigger {
     max-width: none;
@@ -5093,7 +5093,7 @@ body {
   }
 
   .top-preset-label {
-    display: none;
+    display: inline;
   }
 
   .top-preset-dropdown {
@@ -6037,6 +6037,37 @@ body {
 .toolbar-track { display: flex; align-items: center; gap: 6px; min-width: 0; }
 #topbar-track { flex: 1 1 auto; }
 .toolbar-track > [data-toolbar-item] { flex-shrink: 0; white-space: nowrap; cursor: grab; }
+.toolbar-track > #btn-settings:not(.is-compact) { flex: 0 0 auto; width: auto; gap: 5px; padding: 7px 11px; }
+.toolbar-track > #msg-batch-toggle-btn:not(.is-compact) { width: auto; gap: 4px; padding: 4px 6px; }
+.toolbar-track > .long-press-ready { transform: scale(.96); outline: 1px solid var(--accent); outline-offset: -1px; }
+/* 缩略仅作用于入口，不隐藏面板内容或设置齿轮。 */
+.toolbar-track > [data-toolbar-item].is-compact,
+.toolbar-track > [data-toolbar-item].is-compact > button { padding: 4px 6px; min-width: 0; }
+.toolbar-track > [data-toolbar-item].is-compact:has(> button) { padding: 0; }
+.toolbar-track > .is-compact > button > span:not(:has(svg)),
+.toolbar-track > button.is-compact > span { display: none; }
+.toolbar-track > [data-toolbar-item="title"].is-compact { font-size: 0; gap: 0; }
+.toolbar-track > [data-toolbar-item="title"].is-compact > * { display: none; }
+.toolbar-track > [data-toolbar-item="title"].is-compact::after { content: 'M'; font-size: 15px; font-weight: 700; }
+.toolbar-track > [data-toolbar-item="retry"].is-compact button,
+.toolbar-track > [data-toolbar-item="image-gen"].is-compact button { position: relative; }
+.toolbar-track > .is-compact button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.toolbar-track > [data-toolbar-item="retry"].is-compact #auto-retry-toggle[aria-pressed="true"]::after,
+.toolbar-track > [data-toolbar-item="image-gen"].is-compact button:first-child[aria-pressed="true"]::after {
+  content: ''; position: absolute; top: 1px; right: 1px; width: 6px; height: 6px;
+  border-radius: 50%; background: var(--accent); pointer-events: none;
+}
+.toolbar-track > [data-toolbar-item="token-stat"].is-compact { max-width: 56px; }
+.toolbar-track > [data-toolbar-item="token-stat"].is-compact > button {
+  display: block; max-width: 56px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.toolbar-track > [data-toolbar-item="token-stat"].is-compact > button > svg { display: none; }
+.toolbar-track > [data-toolbar-item="token-stat"].is-compact #token-summary-label { display: inline; }
+.toolbar-track > [data-toolbar-item="model-select"].is-compact { max-width: 72px; }
+.toolbar-track > [data-toolbar-item="model-select"].is-compact > button {
+  display: block; max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.toolbar-track > [data-toolbar-item="model-select"].is-compact #quick-model-label { display: inline; }
 .toolbar-track > .dragging-sort {
   opacity: .72; outline: 2px solid var(--accent); outline-offset: -2px;
   border-radius: 8px; background: var(--panel); box-shadow: 0 2px 8px rgba(0,0,0,.18);
@@ -6068,7 +6099,9 @@ body {
     transition: width .18s ease; user-select: text;
   }
   #topbar-track .header-search-box:focus-within .chat-search-input { width: 170px; }
-  .auto-retry-toolbar.toolbar-track > .auto-retry-status { display: none; }
+  #topbar-track [data-toolbar-item="preset"]:not(.is-compact) .top-preset-trigger,
+  #topbar-track [data-toolbar-item="sync"]:not(.is-compact) { max-width: none; overflow: visible; }
+  #topbar-track [data-toolbar-item="preset"]:not(.is-compact) .top-preset-label { max-width: none; overflow: visible; }
   .auto-retry-toolbar.toolbar-track #msg-batch-toggle-btn { margin-left: 0; }
   .composer-meta.toolbar-track .quick-model-picker { flex: 0 0 auto; max-width: none; }
   .composer-meta.toolbar-track .quick-reply-panel,
@@ -6430,7 +6463,7 @@ body {
   }
   .composer-meta::-webkit-scrollbar { display: none; }
   .composer-meta > * { flex-shrink: 0; }
-  .composer-meta-label { display: none; }
+  .composer-meta-label { display: inline; }
   .composer-meta .quick-model-picker { max-width: none; }
   .quick-reply-panel, .quick-params-panel, .quick-model-panel {
     position: fixed;
@@ -6582,7 +6615,17 @@ body {
 .chat-floor-summary-item span { min-width: 0; overflow: hidden; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .chat-floor-summary-item.is-current { background: var(--hover); color: var(--accent); }
 .chat-floor-summary-item.is-current b { color: var(--accent); }
-@media (max-width: 480px) { .chat-floor-nav { right: 10px; } .token-flow-card > summary { gap: 5px; padding: 9px; } }
+@media (max-width: 480px) { .token-flow-card > summary { gap: 5px; padding: 9px; } }
+@media (max-width: 768px) {
+  .chat-floor-nav { right: 4px; gap: 4px; padding: 0; border: 0; background: transparent; box-shadow: none; backdrop-filter: none; }
+  .chat-floor-nav button {
+    width: 26px; height: 26px; min-width: 26px; min-height: 26px;
+    padding: 0; border-radius: 50%; opacity: .42;
+    background: var(--bg-secondary, rgba(30, 30, 36, .6)); backdrop-filter: blur(2px);
+  }
+  .chat-floor-nav button svg { width: 13px; height: 13px; }
+  .chat-floor-nav button:active { opacity: .95; }
+}
 /* 后台任务浮窗与区间操作区，不拦截卡片以外的聊天操作。 */
 #ms-task-hud {
   position: fixed;
@@ -7238,11 +7281,7 @@ body {
   .image-gen-dialog input, .image-gen-dialog select, .image-gen-dialog textarea { font-size: 16px !important; }
   .image-gen-tools button { min-width: 32px; min-height: 32px; }
 }
-@media (max-width: 360px) {
-  .image-gen-capsule button:first-child span { display: none; }
-  .image-gen-capsule button { padding: 3px 5px; }
-  .auto-retry-toolbar > .auto-retry-status { display: none; }
-}
+/* 小屏不再自动隐藏生图文案，缩略由用户逐项切换。 */
 @media (prefers-reduced-motion: reduce) { .image-gen-skeleton svg { animation: none; } }
 
 /* === [ANCHOR: CSS_PRESET_WORKBENCH] 双栏预设工作台与结构化对比 === */

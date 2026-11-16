@@ -13,6 +13,7 @@
   var CONFIG_KEY = 'mychat_config';          // 旧版单 API 配置 + 云同步配置
   var SYNC_CONFIG_KEY = 'mychat_sync_config'; // 本机云连接配置
   var TOOLBAR_ORDER_KEY = 'mychat_toolbar_order';
+  var TOOLBAR_COMPACT_KEY = 'mychat_toolbar_compact';
   var settingsDraft = { sync: null, chatFontSizeDesktop: 15, chatFontSizeMobile: 14 };
   var toolbarDefaults = {
     topBar: ['title', 'preset', 'search', 'theme', 'sync', 'settings'],
@@ -100,7 +101,8 @@
     autoSync: false,
     chatFontSizeDesktop: 15,
     chatFontSizeMobile: 14,
-    toolbarOrder: {}
+    toolbarOrder: {},
+    toolbarCompact: {}
   };
 
   // 多渠道列表：每项 { id, name, baseUrl, apiKey, models: [{ id, alias }] }
@@ -6537,6 +6539,7 @@
     config.autoSync = saved.autoSync === true;
     normalizeDisplaySettings(config, saved);
     config.toolbarOrder = normalizeToolbarOrder(readStorageValue(TOOLBAR_ORDER_KEY) || saved.toolbarOrder);
+    config.toolbarCompact = normalizeToolbarCompact(readStorageValue(TOOLBAR_COMPACT_KEY) || saved.toolbarCompact);
     applyChatFontSize();
   }
 
@@ -12736,7 +12739,8 @@
       settings: {
         chatFontSizeDesktop: config.chatFontSizeDesktop,
         chatFontSizeMobile: config.chatFontSizeMobile,
-        toolbarOrder: normalizeToolbarOrder(config.toolbarOrder)
+        toolbarOrder: normalizeToolbarOrder(config.toolbarOrder),
+        toolbarCompact: normalizeToolbarCompact(config.toolbarCompact)
       }
     };
 
@@ -13105,7 +13109,7 @@
     var keys = [CONFIG_KEY, SYNC_CONFIG_KEY, PROVIDERS_KEY, ACTIVE_TARGET_KEY, SESSIONS_KEY, CURRENT_ID_KEY,
       LAST_MODIFIED_KEY, THEME_KEY, VIEW_KEY, CHAT_PARAMS_KEY, PROMPT_PRESETS_KEY,
       REGEX_RULES_KEY, WORLDBOOKS_KEY, VOCAB_RULES_KEY, QUICK_REPLIES_KEY,
-      GLOBAL_TAVERN_VARS_KEY, AUTO_RETRY_KEY, IMAGE_GEN_CONFIG_KEY, TOOLBAR_ORDER_KEY, CLOUD_MIRROR_KEY];
+      GLOBAL_TAVERN_VARS_KEY, AUTO_RETRY_KEY, IMAGE_GEN_CONFIG_KEY, TOOLBAR_ORDER_KEY, TOOLBAR_COMPACT_KEY, CLOUD_MIRROR_KEY];
     var storage = {};
     keys.forEach(function (key) { storage[key] = localStorage.getItem(key); });
     return { storage: storage, cache: new Map(storageCache), memory: JSON.parse(JSON.stringify({config: config,
@@ -13308,6 +13312,10 @@
       if (displaySettings.toolbarOrder && typeof displaySettings.toolbarOrder === 'object') {
         config.toolbarOrder = normalizeToolbarOrder(displaySettings.toolbarOrder);
         requireStorageWrite(writeStorageValue(TOOLBAR_ORDER_KEY, config.toolbarOrder));
+      }
+      if (displaySettings.toolbarCompact && typeof displaySettings.toolbarCompact === 'object') {
+        config.toolbarCompact = normalizeToolbarCompact(displaySettings.toolbarCompact);
+        requireStorageWrite(writeStorageValue(TOOLBAR_COMPACT_KEY, config.toolbarCompact));
       }
       requireStorageWrite(persistConfig(true));
       applyChatFontSize();
@@ -14126,7 +14134,50 @@
   function toolbarItems(track) {
     return Array.from(track.children).filter(function (el) { return !!el.dataset.toolbarItem; });
   }
+  function normalizeToolbarCompact(value) {
+    var result = {};
+    Object.keys(toolbarDefaults).forEach(function (key) {
+      toolbarDefaults[key].forEach(function (id) {
+        if (id !== 'search' && value && typeof value[id] === 'boolean') result[id] = value[id];
+      });
+    });
+    return result;
+  }
+  function applyToolbarCompact() {
+    var compact = normalizeToolbarCompact(config.toolbarCompact);
+    document.querySelectorAll('[data-toolbar-item]').forEach(function (el) {
+      el.classList.toggle('is-compact', compact[el.dataset.toolbarItem] === true);
+    });
+  }
+  function toggleToolbarCompact(item) {
+    var id = item.dataset.toolbarItem;
+    if (id === 'search') return;
+    var previous = config.toolbarCompact;
+    var compact = normalizeToolbarCompact(previous);
+    compact[id] = !item.classList.contains('is-compact');
+    var keys = [TOOLBAR_COMPACT_KEY, CONFIG_KEY];
+    var saved = keys.map(function (key) { return readStorageRaw(key); });
+    config.toolbarCompact = compact;
+    applyToolbarCompact();
+    try {
+      requireStorageWrite(writeStorageValue(TOOLBAR_COMPACT_KEY, compact));
+      requireStorageWrite(writeStorageValue(CONFIG_KEY, config));
+      touchLastModified();
+      scheduleCloudUpload();
+    } catch (error) {
+      config.toolbarCompact = previous;
+      keys.forEach(function (key, index) {
+        try {
+          if (saved[index] == null) { localStorage.removeItem(key); storageCache.delete(key); }
+          else { localStorage.setItem(key, saved[index]); storageCache.set(key, saved[index]); }
+        } catch (rollbackError) { console.error('缩略回滚失败：', rollbackError); }
+      });
+      applyToolbarCompact();
+      showToast('缩略保存失败');
+    }
+  }
   function applyToolbarOrder() {
+    applyToolbarCompact();
     var orders = normalizeToolbarOrder(config.toolbarOrder);
     document.querySelectorAll('[data-toolbar-track]').forEach(function (track) {
       if (track.dataset.sorting === 'true') return;
@@ -14169,6 +14220,7 @@
     if (track.dataset.sortBound) return;
     track.dataset.sortBound = 'true';
     var active = null, pending = null, timer = null, blockClickUntil = 0, frame = 0, lastX = 0;
+    var isLongPressReady = false, hasDraggedSort = false, lastTouchUntil = 0;
     function itemAt(target) {
       var item = target.closest('[data-toolbar-item]');
       return item && item.parentElement === track ? item : null;
@@ -14189,21 +14241,56 @@
     function finish(save) {
       clearTimeout(timer); timer = null;
       cancelAnimationFrame(frame);
+      var item = pending && pending.item;
+      if (item) item.classList.remove('long-press-ready');
+      if (isLongPressReady || active) blockClickUntil = Date.now() + 700;
       if (active) {
         active.classList.remove('dragging-sort');
         delete track.dataset.sorting;
-        blockClickUntil = Date.now() + 500;
         if (save) saveToolbarOrder(track);
         else applyToolbarOrder();
+      } else if (save && item && isLongPressReady && !hasDraggedSort) {
+        toggleToolbarCompact(item);
       }
       active = null; pending = null;
+      isLongPressReady = false; hasDraggedSort = false;
+    }
+    function begin(item, x, y, kind, id) {
+      finish(false);
+      pending = { item: item, x: x, y: y, kind: kind, id: id };
+      timer = setTimeout(function () {
+        if (!pending) return;
+        isLongPressReady = true;
+        pending.item.classList.add('long-press-ready');
+        try { navigator.vibrate?.(25); } catch (error) { /* 部分浏览器禁止振动。 */ }
+      }, 350);
+    }
+    function move(x, y, event) {
+      if (!pending) return;
+      if (!isLongPressReady) {
+        if (Math.hypot(x - pending.x, y - pending.y) >= 8) finish(false);
+        return;
+      }
+      if (event.cancelable) event.preventDefault();
+      if (!hasDraggedSort && Math.abs(x - pending.x) >= 10) {
+        hasDraggedSort = true; active = pending.item;
+        track.dataset.sorting = 'true';
+        active.classList.remove('long-press-ready');
+        active.classList.add('dragging-sort');
+        lastX = x; frame = requestAnimationFrame(scrollDrag);
+      }
+      if (hasDraggedSort) { lastX = x; reorder(x); }
+    }
+    function isControl(target) {
+      return target.closest('input, textarea, select, [role="dialog"], .chat-search-dropdown, .quick-model-panel');
     }
     track.addEventListener('click', function (e) {
       if (Date.now() < blockClickUntil) { e.preventDefault(); e.stopImmediatePropagation(); }
     }, true);
     track.addEventListener('dragstart', function (e) {
       var item = itemAt(e.target);
-      if (!item || e.target.closest('input, textarea, select, [role="dialog"], .chat-search-dropdown, .quick-model-panel')) { e.preventDefault(); return; }
+      // 实鼠标由同一长按分流接管，避免原生拖放抢走松手事件。
+      if (pending || !item || isControl(e.target)) { e.preventDefault(); return; }
       active = item; track.dataset.sorting = 'true'; active.classList.add('dragging-sort');
       e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', item.dataset.toolbarItem);
     });
@@ -14217,32 +14304,40 @@
     track.addEventListener('drop', function (e) { if (active) { e.preventDefault(); finish(true); } });
     track.addEventListener('dragend', function () { if (active) finish(true); });
     track.addEventListener('touchstart', function (e) {
+      lastTouchUntil = Date.now() + 1000;
       finish(false);
       var item = itemAt(e.target);
-      if (!item || e.touches.length !== 1 || e.target.closest('input, textarea, select, [role="dialog"], .chat-search-dropdown, .quick-model-panel')) return;
-      var t = e.touches[0]; pending = { item: item, x: t.clientX, y: t.clientY, id: t.identifier };
-      timer = setTimeout(function () {
-        if (!pending) return;
-        active = pending.item; track.dataset.sorting = 'true'; lastX = pending.x;
-        active.classList.add('dragging-sort');
-        if (navigator.vibrate) navigator.vibrate(30);
-        frame = requestAnimationFrame(scrollDrag);
-      }, 350);
+      if (!item || e.touches.length !== 1 || isControl(e.target)) return;
+      var t = e.touches[0]; begin(item, t.clientX, t.clientY, 'touch', t.identifier);
     }, { passive: true });
     track.addEventListener('touchmove', function (e) {
-      if (!pending) return;
-      if (e.touches.length !== 1) { finish(false); return; }
-      var t = e.touches[0];
-      if (!active) {
-        if (Math.hypot(t.clientX - pending.x, t.clientY - pending.y) >= 8) finish(false);
-        return;
-      }
-      if (e.cancelable) e.preventDefault();
-      lastX = t.clientX; reorder(lastX);
+      if (!pending || pending.kind !== 'touch') return;
+      if (e.touches.length !== 1 || e.touches[0].identifier !== pending.id) { finish(false); return; }
+      move(e.touches[0].clientX, e.touches[0].clientY, e);
     }, { passive: false });
-    track.addEventListener('touchend', function () { finish(true); });
+    track.addEventListener('touchend', function () { lastTouchUntil = Date.now() + 1000; finish(true); });
     track.addEventListener('touchcancel', function () { finish(false); });
-    track.addEventListener('contextmenu', function (e) { if (active || pending) e.preventDefault(); });
+    track.addEventListener('mousedown', function (e) {
+      if (e.button !== 0 || Date.now() < lastTouchUntil) return;
+      var item = itemAt(e.target);
+      if (item && !isControl(e.target)) begin(item, e.clientX, e.clientY, 'mouse');
+    });
+    document.addEventListener('mousemove', function (e) {
+      if (pending && pending.kind === 'mouse') move(e.clientX, e.clientY, e);
+    });
+    document.addEventListener('mouseup', function (e) {
+      if (e.button === 0 && pending && pending.kind === 'mouse') finish(true);
+    });
+    window.addEventListener('blur', function () { finish(false); });
+    track.addEventListener('contextmenu', function (e) {
+      var item = itemAt(e.target);
+      if (!item || isControl(e.target)) return;
+      if (pending || active || Date.now() < lastTouchUntil || e.pointerType === 'touch') {
+        e.preventDefault(); return;
+      }
+      if (item.dataset.toolbarItem === 'search') return;
+      e.preventDefault(); toggleToolbarCompact(item);
+    });
   }
   function initToolbarSorting() {
     function discover() {

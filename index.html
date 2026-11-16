@@ -14,7 +14,7 @@
   <title>MyChat</title>
   <!-- 代码高亮深色主题（hljs 官方 atom-one-dark 配色，国内高速镜像） -->
   <link rel="stylesheet" href="https://cdn.staticfile.net/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
-  <link rel="stylesheet" href="style.css?v=20261116_34" />
+  <link rel="stylesheet" href="style.css?v=20261116_35" />
 </head>
 
 <body>
@@ -147,6 +147,7 @@
               <line x1="18.6" y1="5.4" x2="16.9" y2="7.1" />
               <line x1="7.1" y1="16.9" x2="5.4" y2="18.6" />
             </svg>
+            <span>主题</span>
           </button>
           <!-- 云同步状态：单色云朵图标 + 纯文字状态 -->
           <button type="button" id="sync-status-btn" class="btn-sync" data-toolbar-item="sync" title="点击同步云端数据">
@@ -164,6 +165,7 @@
               <path
                 d="M19.2 14.4a1.6 1.6 0 0 0 .3 1.8l.1.1a1.9 1.9 0 0 1-2.7 2.7l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5v.2a1.9 1.9 0 0 1-3.8 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a1.9 1.9 0 0 1-2.7-2.7l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1h-.2a1.9 1.9 0 0 1 0-3.8h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a1.9 1.9 0 0 1 2.7-2.7l.1.1a1.6 1.6 0 0 0 1.8.3h.1a1.6 1.6 0 0 0 1-1.5v-.2a1.9 1.9 0 0 1 3.8 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a1.9 1.9 0 0 1 2.7 2.7l-.1.1a1.6 1.6 0 0 0-.3 1.8v.1a1.6 1.6 0 0 0 1.5 1h.2a1.9 1.9 0 0 1 0 3.8h-.1a1.6 1.6 0 0 0-1.5 1z" />
             </svg>
+            <span>设置</span>
           </button>
         </div>
       </header>
@@ -175,6 +177,7 @@
       <footer class="composer">
         <button type="button" id="msg-batch-toggle-btn" title="批量勾选管理消息" aria-label="批量勾选管理消息" aria-pressed="false" aria-controls="msg-batch-toolbar">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="6" height="6" rx="1"/><path d="m4.5 7 1.2 1.2L8 5.8M13 7h8M13 17h8"/><rect x="3" y="14" width="6" height="6" rx="1"/></svg>
+          <span>多选</span>
         </button>
         <div id="msg-batch-toolbar" class="batch-toolbar msg-batch-toolbar hidden" role="toolbar" aria-label="消息批量管理">
           <div class="msg-batch-toolbar-group">
@@ -279,6 +282,7 @@
                   <circle cx="15" cy="16" r="2"></circle>
                 </svg>
               </span>
+              <span class="toolbar-button-text">基础设置</span>
               <span id="quick-params-dot" class="quick-params-dot" hidden aria-hidden="true"></span>
             </button>
             <div id="quick-params-panel" class="quick-params-panel" role="dialog"
@@ -1009,7 +1013,7 @@
   <script src="https://cdn.staticfile.net/marked/12.0.2/marked.min.js"></script>
   <script src="https://cdn.staticfile.net/highlight.js/11.9.0/highlight.min.js"></script>
   <!-- 核心宿主引擎：必须最先加载，负责创建 window.MyChat 桥接器 -->
-  <script src="app.js?v=20261116_34"></script>
+  <script src="app.js?v=20261116_35"></script>
   <!-- 抓包基础设施：宿主创建后立即可用，早于记忆请求模块 -->
   <script src="modules/debug-inspector.js?v=20260405_21"></script>
   <script src="modules/task-hud.js?v=20260405_21"></script>
