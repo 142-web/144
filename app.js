@@ -12,7 +12,13 @@
   // 本地存储键名（API Key 只保存在本机，绝不出现在源码里）
   var CONFIG_KEY = 'mychat_config';          // 旧版单 API 配置 + 云同步配置
   var SYNC_CONFIG_KEY = 'mychat_sync_config'; // 本机云连接配置
-  var settingsDraft = { sync: null, chatFontSize: 15 };
+  var TOOLBAR_ORDER_KEY = 'mychat_toolbar_order';
+  var settingsDraft = { sync: null, chatFontSizeDesktop: 15, chatFontSizeMobile: 14 };
+  var toolbarDefaults = {
+    topBar: ['title', 'preset', 'search', 'theme', 'sync', 'settings'],
+    aboveInput: ['retry', 'image-gen', 'batch-msg'],
+    belowInput: ['quick-reply', 'session-params', 'token-stat', 'model-select']
+  };
   var S3_CONFIG_FIELDS = ['s3Endpoint', 's3Bucket', 's3AccessKey', 's3SecretKey'];
   var PROVIDERS_KEY = 'mychat_providers';    // 多渠道数组（新版）
   var ACTIVE_TARGET_KEY = 'mychat_active_target'; // 当前选中的 { providerId, modelId }
@@ -92,7 +98,9 @@
     s3AccessKey: '',
     s3SecretKey: '',
     autoSync: false,
-    chatFontSize: 15
+    chatFontSizeDesktop: 15,
+    chatFontSizeMobile: 14,
+    toolbarOrder: {}
   };
 
   // 多渠道列表：每项 { id, name, baseUrl, apiKey, models: [{ id, alias }] }
@@ -6527,7 +6535,9 @@
     config.syncToken = typeof saved.syncToken === 'string' ? saved.syncToken.trim() : '';
     config.gistId = typeof saved.gistId === 'string' ? saved.gistId.trim() : '';
     config.autoSync = saved.autoSync === true;
-    config.chatFontSize = applyChatFontSize(saved.chatFontSize);
+    normalizeDisplaySettings(config, saved);
+    config.toolbarOrder = normalizeToolbarOrder(readStorageValue(TOOLBAR_ORDER_KEY) || saved.toolbarOrder);
+    applyChatFontSize();
   }
 
   /**
@@ -7982,13 +7992,34 @@
     });
   }
 
-  // 字号统一取整并限幅；预览不改正式设置，取消时恢复。
-  function applyChatFontSize(size) {
+  // 双端独立限幅；预览只使用草稿，取消后恢复正式设置。
+  function normalizeChatFontSize(size, fallback) {
     var value = Number(size);
-    var validSize = size == null || size === '' || !isFinite(value)
-      ? 15 : Math.max(13, Math.min(20, Math.round(value)));
-    document.documentElement.style.setProperty('--chat-font-size', `${validSize}px`);
-    return validSize;
+    return size == null || size === '' || !isFinite(value)
+      ? fallback : Math.max(10, Math.min(28, Math.round(value)));
+  }
+  function normalizeDisplaySettings(target, source) {
+    target.chatFontSizeDesktop = normalizeChatFontSize(source.chatFontSizeDesktop == null
+      ? source.chatFontSize : source.chatFontSizeDesktop, 15);
+    target.chatFontSizeMobile = normalizeChatFontSize(source.chatFontSizeMobile, 14);
+  }
+  function applyChatFontSize(settings) {
+    settings = settings || config;
+    var mobile = window.matchMedia('(max-width: 768px)').matches;
+    var size = normalizeChatFontSize(mobile ? settings.chatFontSizeMobile : settings.chatFontSizeDesktop, mobile ? 14 : 15);
+    document.documentElement.style.setProperty('--chat-font-size', size + 'px');
+    return size;
+  }
+  function fillChatFontInputs() {
+    normalizeDisplaySettings(settingsDraft, config);
+    ['desktop', 'mobile'].forEach(function (device) {
+      var key = device === 'desktop' ? 'chatFontSizeDesktop' : 'chatFontSizeMobile';
+      var input = document.getElementById('setting-chat-font-size-' + device);
+      var label = document.getElementById('setting-chat-font-size-' + device + '-val');
+      if (input) input.value = settingsDraft[key];
+      if (label) label.textContent = settingsDraft[key] + 'px';
+    });
+    applyChatFontSize();
   }
 
   /**
@@ -8018,11 +8049,7 @@
 
     // 打开期间默认对话参数也进入草稿态：不点保存绝不写库
     draftChatParams = getGlobalChatParams();
-    settingsDraft.chatFontSize = applyChatFontSize(config.chatFontSize);
-    var fontSlider = document.getElementById('setting-chat-font-size');
-    var fontValue = document.getElementById('setting-chat-font-size-val');
-    if (fontSlider) fontSlider.value = settingsDraft.chatFontSize;
-    if (fontValue) fontValue.textContent = settingsDraft.chatFontSize + 'px';
+    fillChatFontInputs();
 
     renderProviderSelect();
     renderProviderFields();
@@ -8108,7 +8135,7 @@
     draftActiveTarget = null;
     draftChatParams = null;
     settingsDraft.sync = null;
-    settingsDraft.chatFontSize = applyChatFontSize(config.chatFontSize);
+    fillChatFontInputs();
     fetchedModels = [];
     hideFetchPanel();
     // 关闭后统一恢复为隐藏态，下次打开不会残留明文
@@ -8155,8 +8182,8 @@
     config.syncToken = syncToken;
     config.gistId = gistId;
     config.autoSync = document.getElementById('cfg-auto-sync').checked;
-    var fontSlider = document.getElementById('setting-chat-font-size');
-    config.chatFontSize = applyChatFontSize(fontSlider ? fontSlider.value : settingsDraft.chatFontSize);
+    normalizeDisplaySettings(config, settingsDraft);
+    applyChatFontSize();
     S3_CONFIG_FIELDS.forEach(function (key) { config[key] = document.getElementById(s3FieldId(key)).value.trim(); });
     if (!config.autoSync && uploadTimer) {
       clearTimeout(uploadTimer);
@@ -12705,7 +12732,12 @@
       theme: uiState.dark ? 'dark' : 'light',
       // 历史偏好仅用于备份兼容，不再控制布局。
       wideView: localStorage.getItem(VIEW_KEY) === 'wide' ? 'wide' : 'bubble',
-      config: Object.assign({}, config)
+      config: Object.assign({}, config),
+      settings: {
+        chatFontSizeDesktop: config.chatFontSizeDesktop,
+        chatFontSizeMobile: config.chatFontSizeMobile,
+        toolbarOrder: normalizeToolbarOrder(config.toolbarOrder)
+      }
     };
 
     // 预留槽位：对话参数与模块化系统提示词预设（本地存在才打包）
@@ -13073,7 +13105,7 @@
     var keys = [CONFIG_KEY, SYNC_CONFIG_KEY, PROVIDERS_KEY, ACTIVE_TARGET_KEY, SESSIONS_KEY, CURRENT_ID_KEY,
       LAST_MODIFIED_KEY, THEME_KEY, VIEW_KEY, CHAT_PARAMS_KEY, PROMPT_PRESETS_KEY,
       REGEX_RULES_KEY, WORLDBOOKS_KEY, VOCAB_RULES_KEY, QUICK_REPLIES_KEY,
-      GLOBAL_TAVERN_VARS_KEY, AUTO_RETRY_KEY, IMAGE_GEN_CONFIG_KEY, CLOUD_MIRROR_KEY];
+      GLOBAL_TAVERN_VARS_KEY, AUTO_RETRY_KEY, IMAGE_GEN_CONFIG_KEY, TOOLBAR_ORDER_KEY, CLOUD_MIRROR_KEY];
     var storage = {};
     keys.forEach(function (key) { storage[key] = localStorage.getItem(key); });
     return { storage: storage, cache: new Map(storageCache), memory: JSON.parse(JSON.stringify({config: config,
@@ -13110,6 +13142,8 @@
     config = state.config; providers = state.providers; activeTarget = state.activeTarget;
     sessions = state.sessions; currentId = state.currentId; globalChatParams = state.globalChatParams;
     promptPresets = state.promptPresets; uiState = state.uiState; inputDraftDirty = state.inputDraftDirty;
+    applyChatFontSize();
+    applyToolbarOrder();
     sessions.forEach(function (s) { syncActiveSubMessages(s, false); });
     if (els.input) els.input.value = snapshot.input;
     if (failures.length) throw new Error('存储回滚未完成，请保留备份并停止操作：' + failures.join('、'));
@@ -13262,6 +13296,22 @@
         if (Object.prototype.hasOwnProperty.call(payload.syncConfig, key)) config[key] = payload.syncConfig[key];
       });
       requireStorageWrite(persistConfig(true));
+    }
+    // 新版 settings 优先，兼容旧版 config；缺字段不覆盖已有偏好。
+    var displaySettings = payload.settings && typeof payload.settings === 'object' ? payload.settings : payload.config;
+    if (displaySettings && typeof displaySettings === 'object') {
+      var fontSource = Object.assign({}, config, displaySettings);
+      if (displaySettings.chatFontSizeDesktop == null && displaySettings.chatFontSize != null) {
+        fontSource.chatFontSizeDesktop = displaySettings.chatFontSize;
+      }
+      normalizeDisplaySettings(config, fontSource);
+      if (displaySettings.toolbarOrder && typeof displaySettings.toolbarOrder === 'object') {
+        config.toolbarOrder = normalizeToolbarOrder(displaySettings.toolbarOrder);
+        requireStorageWrite(writeStorageValue(TOOLBAR_ORDER_KEY, config.toolbarOrder));
+      }
+      requireStorageWrite(persistConfig(true));
+      applyChatFontSize();
+      applyToolbarOrder();
     }
     if (Array.isArray(payload.vocabRules)) {
       requireStorageWrite(writeStorageValue(VOCAB_RULES_KEY, payload.vocabRules));
@@ -14061,12 +14111,229 @@
     });
   }
 
-  var chatFontSlider = document.getElementById('setting-chat-font-size');
-  if (chatFontSlider) chatFontSlider.addEventListener('input', function () {
-    settingsDraft.chatFontSize = applyChatFontSize(chatFontSlider.value);
-    var label = document.getElementById('setting-chat-font-size-val');
-    if (label) label.textContent = settingsDraft.chatFontSize + 'px';
-    autoGrowInput();
+  // 工具栏只移动原节点，保留插件引用与所有点击监听。
+  function normalizeToolbarOrder(order) {
+    var result = {};
+    Object.keys(toolbarDefaults).forEach(function (key) {
+      var ids = order && Array.isArray(order[key]) ? order[key] : [];
+      result[key] = ids.filter(function (id, index) {
+        return toolbarDefaults[key].indexOf(id) !== -1 && ids.indexOf(id) === index;
+      });
+      toolbarDefaults[key].forEach(function (id) { if (result[key].indexOf(id) === -1) result[key].push(id); });
+    });
+    return result;
+  }
+  function toolbarItems(track) {
+    return Array.from(track.children).filter(function (el) { return !!el.dataset.toolbarItem; });
+  }
+  function applyToolbarOrder() {
+    var orders = normalizeToolbarOrder(config.toolbarOrder);
+    document.querySelectorAll('[data-toolbar-track]').forEach(function (track) {
+      if (track.dataset.sorting === 'true') return;
+      var nodes = toolbarItems(track);
+      var sorted = (orders[track.dataset.toolbarTrack] || []).map(function (id) {
+        return nodes.find(function (el) { return el.dataset.toolbarItem === id; });
+      }).filter(Boolean);
+      if (sorted.some(function (el, index) { return nodes[index] !== el; })) {
+        sorted.forEach(function (el) { track.appendChild(el); });
+      }
+    });
+  }
+  function saveToolbarOrder(track) {
+    var order = normalizeToolbarOrder(config.toolbarOrder);
+    var ids = toolbarItems(track).map(function (el) { return el.dataset.toolbarItem; });
+    // 尚未挂载的插件仍保留在顺序尾部，避免保存时丢失。
+    order[track.dataset.toolbarTrack] = ids.concat(order[track.dataset.toolbarTrack].filter(function (id) { return ids.indexOf(id) === -1; }));
+    var previous = config.toolbarOrder;
+    var keys = [TOOLBAR_ORDER_KEY, CONFIG_KEY];
+    var saved = keys.map(function (key) { return readStorageRaw(key); });
+    config.toolbarOrder = order;
+    try {
+      requireStorageWrite(writeStorageValue(TOOLBAR_ORDER_KEY, order));
+      requireStorageWrite(writeStorageValue(CONFIG_KEY, config));
+      touchLastModified();
+      scheduleCloudUpload();
+    } catch (error) {
+      config.toolbarOrder = previous;
+      keys.forEach(function (key, index) {
+        try {
+          if (saved[index] == null) { localStorage.removeItem(key); storageCache.delete(key); }
+          else { localStorage.setItem(key, saved[index]); storageCache.set(key, saved[index]); }
+        } catch (rollbackError) { console.error('排序回滚失败：', rollbackError); }
+      });
+      applyToolbarOrder();
+      showToast('排序保存失败');
+    }
+  }
+  function bindToolbarSort(track) {
+    if (track.dataset.sortBound) return;
+    track.dataset.sortBound = 'true';
+    var active = null, pending = null, timer = null, blockClickUntil = 0, frame = 0, lastX = 0;
+    function itemAt(target) {
+      var item = target.closest('[data-toolbar-item]');
+      return item && item.parentElement === track ? item : null;
+    }
+    function reorder(x) {
+      var others = toolbarItems(track).filter(function (el) { return el !== active; });
+      var before = others.find(function (el) { var r = el.getBoundingClientRect(); return x < r.left + r.width / 2; });
+      if (before) { if (active.nextElementSibling !== before) track.insertBefore(active, before); }
+      else if (toolbarItems(track).slice(-1)[0] !== active) track.appendChild(active);
+    }
+    function scrollDrag() {
+      if (!active || !pending) return;
+      var r = track.getBoundingClientRect();
+      var delta = lastX < r.left + 30 ? -7 : lastX > r.right - 30 ? 7 : 0;
+      if (delta) { track.scrollLeft += delta; reorder(lastX); }
+      frame = requestAnimationFrame(scrollDrag);
+    }
+    function finish(save) {
+      clearTimeout(timer); timer = null;
+      cancelAnimationFrame(frame);
+      if (active) {
+        active.classList.remove('dragging-sort');
+        delete track.dataset.sorting;
+        blockClickUntil = Date.now() + 500;
+        if (save) saveToolbarOrder(track);
+        else applyToolbarOrder();
+      }
+      active = null; pending = null;
+    }
+    track.addEventListener('click', function (e) {
+      if (Date.now() < blockClickUntil) { e.preventDefault(); e.stopImmediatePropagation(); }
+    }, true);
+    track.addEventListener('dragstart', function (e) {
+      var item = itemAt(e.target);
+      if (!item || e.target.closest('input, textarea, select, [role="dialog"], .chat-search-dropdown, .quick-model-panel')) { e.preventDefault(); return; }
+      active = item; track.dataset.sorting = 'true'; active.classList.add('dragging-sort');
+      e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', item.dataset.toolbarItem);
+    });
+    track.addEventListener('dragover', function (e) {
+      if (!active) return;
+      e.preventDefault(); reorder(e.clientX);
+      var r = track.getBoundingClientRect();
+      if (e.clientX < r.left + 30) track.scrollLeft -= 12;
+      if (e.clientX > r.right - 30) track.scrollLeft += 12;
+    });
+    track.addEventListener('drop', function (e) { if (active) { e.preventDefault(); finish(true); } });
+    track.addEventListener('dragend', function () { if (active) finish(true); });
+    track.addEventListener('touchstart', function (e) {
+      finish(false);
+      var item = itemAt(e.target);
+      if (!item || e.touches.length !== 1 || e.target.closest('input, textarea, select, [role="dialog"], .chat-search-dropdown, .quick-model-panel')) return;
+      var t = e.touches[0]; pending = { item: item, x: t.clientX, y: t.clientY, id: t.identifier };
+      timer = setTimeout(function () {
+        if (!pending) return;
+        active = pending.item; track.dataset.sorting = 'true'; lastX = pending.x;
+        active.classList.add('dragging-sort');
+        if (navigator.vibrate) navigator.vibrate(30);
+        frame = requestAnimationFrame(scrollDrag);
+      }, 350);
+    }, { passive: true });
+    track.addEventListener('touchmove', function (e) {
+      if (!pending) return;
+      if (e.touches.length !== 1) { finish(false); return; }
+      var t = e.touches[0];
+      if (!active) {
+        if (Math.hypot(t.clientX - pending.x, t.clientY - pending.y) >= 8) finish(false);
+        return;
+      }
+      if (e.cancelable) e.preventDefault();
+      lastX = t.clientX; reorder(lastX);
+    }, { passive: false });
+    track.addEventListener('touchend', function () { finish(true); });
+    track.addEventListener('touchcancel', function () { finish(false); });
+    track.addEventListener('contextmenu', function (e) { if (active || pending) e.preventDefault(); });
+  }
+  function initToolbarSorting() {
+    function discover() {
+      var retry = document.querySelector('.auto-retry-toolbar');
+      if (retry) {
+        retry.dataset.toolbarTrack = 'aboveInput'; retry.classList.add('toolbar-track');
+        [['.auto-retry-group', 'retry'], ['#image-gen-capsule', 'image-gen'], ['#msg-batch-toggle-btn', 'batch-msg']].forEach(function (pair) {
+          var el = retry.querySelector(pair[0]); if (el) el.dataset.toolbarItem = pair[1];
+        });
+      }
+      var token = document.getElementById('token-summary-wrap');
+      if (token) token.dataset.toolbarItem = 'token-stat';
+      document.querySelectorAll('[data-toolbar-track]').forEach(function (track) {
+        toolbarItems(track).forEach(function (el) { el.draggable = true; });
+        bindToolbarSort(track);
+      });
+      applyToolbarOrder();
+    }
+    discover();
+    // 只观察宿主挂载区的子节点；排序无变化时不写 DOM，避免观察循环。
+    var observer = new MutationObserver(discover);
+    var composer = document.querySelector('.composer');
+    if (composer) observer.observe(composer, { childList: true, subtree: true });
+    window.addEventListener('DOMContentLoaded', discover, { once: true });
+  }
+
+  var deferredInstallPrompt = null;
+  window.addEventListener('beforeinstallprompt', function (event) {
+    event.preventDefault(); deferredInstallPrompt = event;
+  });
+  function updateFullscreenButton() {
+    var button = document.getElementById('mobile-fullscreen-btn');
+    if (!button) return;
+    var standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+    var fullscreen = !!document.fullscreenElement || window.matchMedia('(display-mode: fullscreen)').matches;
+    button.hidden = !window.matchMedia('(max-width: 768px)').matches || (standalone && !document.fullscreenElement) || (fullscreen && !document.fullscreenElement);
+    button.title = document.fullscreenElement ? '退出全屏' : '全屏模式';
+    button.setAttribute('aria-label', button.title);
+    button.setAttribute('aria-pressed', String(!!document.fullscreenElement));
+  }
+  function initMobileFullscreen() {
+    var button = document.getElementById('mobile-fullscreen-btn');
+    if (!button) return;
+    async function installFallback() {
+      if (deferredInstallPrompt) {
+        var prompt = deferredInstallPrompt; deferredInstallPrompt = null;
+        await prompt.prompt(); await prompt.userChoice;
+      } else {
+        // 单步安装指引，不在常驻界面堆砌说明。
+        await window.alert('点击浏览器菜单 → 添加到主屏幕，从桌面图标打开即可永久隐藏上下地址栏');
+      }
+    }
+    button.addEventListener('click', async function () {
+      try {
+        if (document.fullscreenElement && document.exitFullscreen) await document.exitFullscreen();
+        else if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen();
+        else await installFallback();
+      } catch (error) {
+        showToast('全屏不可用');
+        try { await installFallback(); } catch (installError) { showToast('安装未完成'); }
+      }
+      updateFullscreenButton();
+    });
+    document.addEventListener('fullscreenchange', updateFullscreenButton);
+    window.addEventListener('appinstalled', function () { deferredInstallPrompt = null; updateFullscreenButton(); });
+    ['(display-mode: standalone)', '(display-mode: fullscreen)'].forEach(function (query) {
+      var media = window.matchMedia(query);
+      if (media.addEventListener) media.addEventListener('change', updateFullscreenButton);
+    });
+    updateFullscreenButton();
+  }
+
+  ['desktop', 'mobile'].forEach(function (device) {
+    var slider = document.getElementById('setting-chat-font-size-' + device);
+    if (!slider) return;
+    slider.addEventListener('input', function () {
+      var key = device === 'desktop' ? 'chatFontSizeDesktop' : 'chatFontSizeMobile';
+      settingsDraft[key] = normalizeChatFontSize(slider.value, device === 'desktop' ? 15 : 14);
+      var label = document.getElementById(slider.id + '-val');
+      if (label) label.textContent = settingsDraft[key] + 'px';
+      applyChatFontSize(settingsDraft);
+      autoGrowInput();
+    });
+  });
+  var fontResizeTimer;
+  window.addEventListener('resize', function () {
+    clearTimeout(fontResizeTimer);
+    fontResizeTimer = setTimeout(function () {
+      applyChatFontSize(els.modal && els.modal.classList.contains('show') ? settingsDraft : config);
+      updateFullscreenButton();
+    }, 100);
   });
 
   // 模块稍后创建原自动重试工具栏，仅将消息多选入口接入同一行右端。
@@ -15013,7 +15280,9 @@
     // 酒馆兼容发送桥接器（状态栏按钮 directSend）
     setupSillyTavernBridge();
     loadConfig();
-    applyChatFontSize(config.chatFontSize);
+    applyChatFontSize();
+    initToolbarSorting();
+    initMobileFullscreen();
     initOverlayHistory();
     // 全局默认对话参数：必须早于会话加载，新会话才能正确继承
     loadChatParams();

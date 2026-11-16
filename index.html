@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
@@ -14,7 +14,7 @@
   <title>MyChat</title>
   <!-- 代码高亮深色主题（hljs 官方 atom-one-dark 配色，国内高速镜像） -->
   <link rel="stylesheet" href="https://cdn.staticfile.net/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
-  <link rel="stylesheet" href="style.css?v=20260405_33" />
+  <link rel="stylesheet" href="style.css?v=20261116_34" />
 </head>
 
 <body>
@@ -58,12 +58,13 @@
             <line x1="4" y1="17" x2="20" y2="17" />
           </svg>
         </button>
-        <div class="brand">
+        <div id="topbar-track" class="toolbar-track" data-toolbar-track="topBar">
+        <div class="brand" data-toolbar-item="title">
           <span class="brand-dot"></span>
           <span>MyChat</span>
         </div>
         <!-- 顶部 #0 一站式预设控制台：常驻显示当前预设，点击展开管理面板（替代原聊天流内的 #0 卡片） -->
-        <div id="top-preset-wrap" class="top-preset-wrap">
+        <div id="top-preset-wrap" class="top-preset-wrap" data-toolbar-item="preset">
           <button type="button" id="top-preset-trigger" class="top-preset-trigger" aria-haspopup="dialog"
             aria-expanded="false" title="系统提示词预设（#0）一站式管理">
             <span class="top-preset-badge">#0</span>
@@ -103,7 +104,7 @@
           </div>
         </div>
         <!-- 右上角对话搜索：覆盖 #0 系统提示词层与 #1+ 对话楼层，支持跨会话定位 -->
-        <div id="header-search-wrap" class="header-search-wrap">
+        <div id="header-search-wrap" class="header-search-wrap" data-toolbar-item="search">
           <button type="button" id="chat-search-toggle" class="chat-search-toggle" title="搜索对话" aria-label="搜索对话" aria-expanded="false" aria-controls="chat-search-box chat-search-dropdown">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m15.4 15.4 4.6 4.6"/></svg>
           </button>
@@ -126,9 +127,8 @@
           <div id="chat-search-dropdown" class="chat-search-dropdown" role="listbox" hidden></div>
         </div>
         <!-- 顶部右侧按钮组：主题切换 + 云同步状态 + 设置 -->
-        <div class="topbar-actions">
           <!-- 主题切换：浅色模式显示月亮，暗黑模式显示太阳（单色线条图标，随按钮文字色变化） -->
-          <button type="button" id="theme-toggle-btn" class="btn-icon-toggle" title="切换浅色 / 暗黑主题"
+          <button type="button" id="theme-toggle-btn" class="btn-icon-toggle" data-toolbar-item="theme" title="切换浅色 / 暗黑主题"
             aria-label="切换浅色 / 暗黑主题">
             <svg class="icon-theme icon-theme-moon" viewBox="0 0 24 24" width="18" height="18" fill="none"
               stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
@@ -149,7 +149,7 @@
             </svg>
           </button>
           <!-- 云同步状态：单色云朵图标 + 纯文字状态 -->
-          <button type="button" id="sync-status-btn" class="btn-sync" title="点击同步云端数据">
+          <button type="button" id="sync-status-btn" class="btn-sync" data-toolbar-item="sync" title="点击同步云端数据">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"
               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M7 18.5a4 4 0 0 1-.3-8 5.6 5.6 0 0 1 10.7-1.4A3.9 3.9 0 0 1 17.6 18.5z" />
@@ -157,7 +157,7 @@
             <span id="sync-status-text">未配置同步</span>
           </button>
           <!-- 设置：纯齿轮入口 -->
-          <button type="button" id="btn-settings" class="btn-settings" title="设置" aria-label="设置">
+          <button type="button" id="btn-settings" class="btn-settings" data-toolbar-item="settings" title="设置" aria-label="设置">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"
               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="3.2" />
@@ -258,15 +258,15 @@
           <button type="button" id="btn-send" class="btn-send">发送</button>
         </div>
         <!-- 快捷模型选择器：自定义下拉面板，按渠道分组且支持展开 / 收拢 -->
-        <div class="composer-meta">
-          <div id="quick-reply-wrap" class="quick-reply-wrap">
+        <div class="composer-meta toolbar-track" data-toolbar-track="belowInput">
+          <div id="quick-reply-wrap" class="quick-reply-wrap" data-toolbar-item="quick-reply">
             <button type="button" id="quick-reply-btn" class="quick-reply-btn" aria-haspopup="true" aria-expanded="false" title="快速回复（常用短语一键发送或填入）">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="m13 2-9 12h7l-1 8 10-12h-7z" /></svg><span>快速回复</span>
             </button>
             <div id="quick-reply-panel" class="quick-reply-panel" role="dialog" aria-label="快速回复" hidden></div>
           </div>
           <!-- 当前对话参数：轻量上弹面板（仅对本会话生效，输入即生效） -->
-          <div id="quick-params" class="quick-params">
+          <div id="quick-params" class="quick-params" data-toolbar-item="session-params">
             <button type="button" id="quick-params-btn" class="quick-params-btn" aria-haspopup="true"
               aria-expanded="false" title="调整当前对话参数（仅对本会话生效）">
               <!-- Lucide Sliders（横向三滑块调节器）16x16 纯矢量图标 -->
@@ -323,7 +323,7 @@
             </div>
           </div>
           <!-- 实时 Token 统计胶囊：由 modules/memory-summary.js 挂载与刷新 -->
-          <div id="token-summary-wrap" class="token-summary-wrap">
+          <div id="token-summary-wrap" class="token-summary-wrap" data-toolbar-item="token-stat">
             <button type="button" id="token-summary-btn" class="token-summary-btn"
               title="查看 Token 详情">
               <!-- 14x14 闪电统计纯 SVG 图标 -->
@@ -335,7 +335,7 @@
               <span id="token-summary-dot" class="token-summary-dot" hidden></span>
             </button>
           </div>
-          <div id="quick-model-picker" class="quick-model-picker">
+          <div id="quick-model-picker" class="quick-model-picker" data-toolbar-item="model-select">
             <button type="button" id="quick-model-btn" class="quick-model-btn" aria-haspopup="listbox"
               aria-expanded="false" title="切换当前使用的渠道与模型">
               <span id="quick-model-label" class="quick-model-label">加载中…</span>
@@ -354,7 +354,9 @@
     <div class="modal-card settings-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div class="settings-head">
         <h2 id="modal-title" class="modal-title">设置</h2>
-        <p class="modal-sub">配置只保存在本机浏览器中，不会上传到任何服务器。</p>
+        <button type="button" id="mobile-fullscreen-btn" class="btn-icon-toggle" title="全屏模式" aria-label="全屏模式" hidden>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></svg>
+        </button>
       </div>
 
       <div class="settings-body">
@@ -473,10 +475,15 @@
               </p>
 
               <div class="field">
-                <label for="setting-chat-font-size">对话字体大小</label>
+                <label for="setting-chat-font-size-desktop">电脑端对话字号</label>
                 <div class="chat-font-size-control">
-                  <input type="range" id="setting-chat-font-size" min="13" max="20" step="1" value="15" />
-                  <span id="setting-chat-font-size-val">15px</span>
+                  <input type="range" id="setting-chat-font-size-desktop" min="10" max="28" step="1" value="15" />
+                  <span id="setting-chat-font-size-desktop-val">15px</span>
+                </div>
+                <label for="setting-chat-font-size-mobile">手机端对话字号</label>
+                <div class="chat-font-size-control">
+                  <input type="range" id="setting-chat-font-size-mobile" min="10" max="28" step="1" value="14" />
+                  <span id="setting-chat-font-size-mobile-val">14px</span>
                 </div>
               </div>
 
@@ -1002,7 +1009,7 @@
   <script src="https://cdn.staticfile.net/marked/12.0.2/marked.min.js"></script>
   <script src="https://cdn.staticfile.net/highlight.js/11.9.0/highlight.min.js"></script>
   <!-- 核心宿主引擎：必须最先加载，负责创建 window.MyChat 桥接器 -->
-  <script src="app.js?v=20260405_28"></script>
+  <script src="app.js?v=20261116_34"></script>
   <!-- 抓包基础设施：宿主创建后立即可用，早于记忆请求模块 -->
   <script src="modules/debug-inspector.js?v=20260405_21"></script>
   <script src="modules/task-hud.js?v=20260405_21"></script>

@@ -126,7 +126,9 @@ body {
    =================================================================== */
 .app-layout {
   display: flex;
-  height: 100%;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
   min-height: 0;
 }
 
@@ -2902,13 +2904,13 @@ body {
   align-items: center;
   gap: 12px;
 }
-#setting-chat-font-size {
+.chat-font-size-control input[type="range"] {
   flex: 1;
   min-width: 0;
   padding: 0;
   accent-color: var(--accent);
 }
-#setting-chat-font-size-val {
+.chat-font-size-control > span {
   min-width: 4ch;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
@@ -6030,6 +6032,51 @@ body {
 }
 
 /* === [ANCHOR: CSS_RESPONSIVE] 气泡布局与移动端响应式 === */
+
+/* 三行工具栏复用原节点；宽屏直接拖动，窄屏长按排序。 */
+.toolbar-track { display: flex; align-items: center; gap: 6px; min-width: 0; }
+#topbar-track { flex: 1 1 auto; }
+.toolbar-track > [data-toolbar-item] { flex-shrink: 0; white-space: nowrap; cursor: grab; }
+.toolbar-track > .dragging-sort {
+  opacity: .72; outline: 2px solid var(--accent); outline-offset: -2px;
+  border-radius: 8px; background: var(--panel); box-shadow: 0 2px 8px rgba(0,0,0,.18);
+  cursor: grabbing;
+}
+#mobile-fullscreen-btn[hidden] { display: none; }
+#mobile-fullscreen-btn { margin-left: auto; }
+.settings-head:has(#mobile-fullscreen-btn) { display: flex; align-items: center; gap: 8px; }
+@media (max-width: 768px) {
+  .topbar > .btn-menu { flex: 0 0 38px; }
+  .toolbar-track, .auto-retry-toolbar.toolbar-track, .composer-meta.toolbar-track {
+    display: flex; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+    align-items: center; justify-content: flex-start; gap: 6px;
+    max-width: 100%; min-width: 0;
+  }
+  .toolbar-track::-webkit-scrollbar { display: none; }
+  .toolbar-track > * { flex-shrink: 0; white-space: nowrap; }
+  .toolbar-track > [data-toolbar-item] { -webkit-touch-callout: none; user-select: none; }
+  #topbar-track .brand { flex: 0 0 auto; overflow: visible; }
+  #topbar-track .top-preset-wrap { flex: 0 0 auto; }
+  #topbar-track .header-search-wrap { flex: 0 0 auto; }
+  #topbar-track .chat-search-toggle, #topbar-track .chat-search-close { display: none; }
+  #topbar-track .header-search-box, #topbar-track .is-open .header-search-box {
+    display: flex; position: static; width: auto; max-width: none;
+  }
+  #topbar-track .chat-search-input {
+    flex: 0 0 auto; width: 90px; min-width: 0;
+    transition: width .18s ease; user-select: text;
+  }
+  #topbar-track .header-search-box:focus-within .chat-search-input { width: 170px; }
+  .auto-retry-toolbar.toolbar-track > .auto-retry-status { display: none; }
+  .auto-retry-toolbar.toolbar-track #msg-batch-toggle-btn { margin-left: 0; }
+  .composer-meta.toolbar-track .quick-model-picker { flex: 0 0 auto; max-width: none; }
+  .composer-meta.toolbar-track .quick-reply-panel,
+  .composer-meta.toolbar-track .quick-params-panel,
+  .composer-meta.toolbar-track .quick-model-panel {
+    width: 250px !important; max-width: calc(100vw - 24px) !important; right: auto !important;
+  }
+}
 
 /* ===================================================================
    手机端适配：侧边栏变抽屉
