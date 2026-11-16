@@ -143,8 +143,9 @@ body {
 
 /* ===== 左侧会话侧边栏 ===== */
 .sidebar {
-  flex: 0 0 260px;
+  flex: 0 0 auto;
   width: 260px;
+  transition: width .2s ease;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -549,9 +550,10 @@ body {
   box-shadow: 0 0 0 4px rgba(47, 111, 235, 0.16);
 }
 
-/* 汉堡菜单按钮：PC 宽屏隐藏，手机端显示 */
+/* 双端常驻侧栏入口，不参与工具栏排序。 */
 .btn-menu {
-  display: none;
+  display: inline-flex;
+  flex: 0 0 38px;
   align-items: center;
   justify-content: center;
   width: 38px;
@@ -633,7 +635,7 @@ body {
   color: var(--text-dim);
   cursor: pointer;
 }
-.chat-search-toggle { display: none; width: 34px; height: 34px; }
+.chat-search-toggle { display: inline-flex; width: 34px; height: 34px; }
 .chat-search-close { display: inline-flex; width: 24px; height: 24px; border: 0; }
 .chat-search-clear[hidden] { display: none; }
 .chat-search-toggle:hover, .chat-search-close:hover { color: var(--accent); }
@@ -6037,6 +6039,23 @@ body {
 .toolbar-track { display: flex; align-items: center; gap: 6px; min-width: 0; }
 #topbar-track { flex: 1 1 auto; }
 .toolbar-track > [data-toolbar-item] { flex-shrink: 0; white-space: nowrap; cursor: grab; }
+#topbar-track .brand { max-width: 240px; min-width: 0; overflow: hidden; font-size: 15px; font-weight: 600; }
+#current-chat-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#current-chat-title { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#topbar-track .header-search-wrap { flex: 0 0 auto; }
+#topbar-track .header-search-wrap:not(.search-expanded) .header-search-box { display: none; }
+#topbar-track .header-search-wrap.search-expanded > .chat-search-toggle { display: none; }
+#topbar-track .header-search-wrap.search-expanded .header-search-box {
+  display: flex; position: static; width: auto; max-width: none;
+}
+#topbar-track .header-search-wrap:not(.search-expanded) > .header-search-box { display: none; }
+#topbar-track .header-search-wrap.search-expanded > .chat-search-toggle { display: none; }
+#topbar-track .header-search-wrap.search-expanded > .header-search-box { position: static; }
+#topbar-track .chat-search-close { display: inline-flex; }
+#topbar-track .chat-search-input { flex: 0 0 auto; width: 130px; min-width: 0; }
+@media (min-width: 769px) {
+  .sidebar.sidebar-collapsed { width: 0; min-width: 0; padding: 0; overflow: hidden; border-right: none; }
+}
 .toolbar-track > #btn-settings:not(.is-compact) { flex: 0 0 auto; width: auto; gap: 5px; padding: 7px 11px; }
 .toolbar-track > #msg-batch-toggle-btn:not(.is-compact) { width: auto; gap: 4px; padding: 4px 6px; }
 .toolbar-track > .long-press-ready { transform: scale(.96); outline: 1px solid var(--accent); outline-offset: -1px; }
@@ -6087,13 +6106,10 @@ body {
   .toolbar-track::-webkit-scrollbar { display: none; }
   .toolbar-track > * { flex-shrink: 0; white-space: nowrap; }
   .toolbar-track > [data-toolbar-item] { -webkit-touch-callout: none; user-select: none; }
-  #topbar-track .brand { flex: 0 0 auto; overflow: visible; }
+  #topbar-track .brand { flex: 0 0 auto; max-width: 130px; overflow: hidden; font-size: 15px; font-weight: 600; }
   #topbar-track .top-preset-wrap { flex: 0 0 auto; }
   #topbar-track .header-search-wrap { flex: 0 0 auto; }
-  #topbar-track .chat-search-toggle, #topbar-track .chat-search-close { display: none; }
-  #topbar-track .header-search-box, #topbar-track .is-open .header-search-box {
-    display: flex; position: static; width: auto; max-width: none;
-  }
+  #topbar-track .header-search-wrap:not(.search-expanded) > .chat-search-toggle { display: inline-flex; }
   #topbar-track .chat-search-input {
     flex: 0 0 auto; width: 90px; min-width: 0;
     transition: width .18s ease; user-select: text;

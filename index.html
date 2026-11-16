@@ -14,7 +14,7 @@
   <title>MyChat</title>
   <!-- 代码高亮深色主题（hljs 官方 atom-one-dark 配色，国内高速镜像） -->
   <link rel="stylesheet" href="https://cdn.staticfile.net/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
-  <link rel="stylesheet" href="style.css?v=20261116_35" />
+  <link rel="stylesheet" href="style.css?v=20261116_36" />
 </head>
 
 <body>
@@ -60,8 +60,7 @@
         </button>
         <div id="topbar-track" class="toolbar-track" data-toolbar-track="topBar">
         <div class="brand" data-toolbar-item="title">
-          <span class="brand-dot"></span>
-          <span>MyChat</span>
+          <span id="current-chat-title" title="新对话">新对话</span>
         </div>
         <!-- 顶部 #0 一站式预设控制台：常驻显示当前预设，点击展开管理面板（替代原聊天流内的 #0 卡片） -->
         <div id="top-preset-wrap" class="top-preset-wrap" data-toolbar-item="preset">
@@ -105,7 +104,7 @@
         </div>
         <!-- 右上角对话搜索：覆盖 #0 系统提示词层与 #1+ 对话楼层，支持跨会话定位 -->
         <div id="header-search-wrap" class="header-search-wrap" data-toolbar-item="search">
-          <button type="button" id="chat-search-toggle" class="chat-search-toggle" title="搜索对话" aria-label="搜索对话" aria-expanded="false" aria-controls="chat-search-box chat-search-dropdown">
+          <button type="button" id="search-toggle-btn" class="chat-search-toggle icon-btn" title="搜索对话" aria-label="搜索对话" aria-expanded="false" aria-controls="chat-search-box chat-search-dropdown">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="m15.4 15.4 4.6 4.6"/></svg>
           </button>
           <div id="chat-search-box" class="header-search-box">
@@ -119,8 +118,8 @@
               autocomplete="off" spellcheck="false" aria-label="搜索对话内容" />
             <button type="button" id="chat-search-clear" class="chat-search-clear" title="清空搜索" aria-label="清空搜索" hidden><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
             <!-- 搜索范围胶囊：当前对话 / 所有对话 -->
-            <button type="button" id="chat-search-scope" class="chat-search-scope" data-scope="current"
-              title="切换搜索范围（当前对话 / 所有对话）">当前对话</button>
+            <button type="button" id="search-scope-btn" class="chat-search-scope" data-scope="current"
+              title="切换搜索范围（当前对话 / 所有对话）">当前</button>
             <button type="button" id="chat-search-close" class="chat-search-close" title="关闭搜索" aria-label="关闭搜索"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
           </div>
           <!-- 搜索结果浮层：有关键词时展开，点击外部自动收起 -->
@@ -1013,7 +1012,7 @@
   <script src="https://cdn.staticfile.net/marked/12.0.2/marked.min.js"></script>
   <script src="https://cdn.staticfile.net/highlight.js/11.9.0/highlight.min.js"></script>
   <!-- 核心宿主引擎：必须最先加载，负责创建 window.MyChat 桥接器 -->
-  <script src="app.js?v=20261116_35"></script>
+  <script src="app.js?v=20261116_36"></script>
   <!-- 抓包基础设施：宿主创建后立即可用，早于记忆请求模块 -->
   <script src="modules/debug-inspector.js?v=20260405_21"></script>
   <script src="modules/task-hud.js?v=20260405_21"></script>

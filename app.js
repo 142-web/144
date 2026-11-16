@@ -14,6 +14,8 @@
   var SYNC_CONFIG_KEY = 'mychat_sync_config'; // 本机云连接配置
   var TOOLBAR_ORDER_KEY = 'mychat_toolbar_order';
   var TOOLBAR_COMPACT_KEY = 'mychat_toolbar_compact';
+  var DESKTOP_SIDEBAR_KEY = 'mychat_desktop_sidebar_collapsed';
+  var toolbarOrder = {}, toolbarCompact = {}, isDraggingToolbar = false;
   var settingsDraft = { sync: null, chatFontSizeDesktop: 15, chatFontSizeMobile: 14 };
   var toolbarDefaults = {
     topBar: ['title', 'preset', 'search', 'theme', 'sync', 'settings'],
@@ -100,9 +102,7 @@
     s3SecretKey: '',
     autoSync: false,
     chatFontSizeDesktop: 15,
-    chatFontSizeMobile: 14,
-    toolbarOrder: {},
-    toolbarCompact: {}
+    chatFontSizeMobile: 14
   };
 
   // 多渠道列表：每项 { id, name, baseUrl, apiKey, models: [{ id, alias }] }
@@ -236,14 +236,14 @@
 
     // 顶部快捷切换按钮
     themeToggleBtn: document.getElementById('theme-toggle-btn'),
-    chatSearchToggle: document.getElementById('chat-search-toggle'),
+    chatSearchToggle: document.getElementById('search-toggle-btn'),
     chatSearchClose: document.getElementById('chat-search-close'),
 
     // 顶部右上角对话搜索（当前对话 / 所有对话，含 #0 系统提示词层）
     headerSearchWrap: document.getElementById('header-search-wrap'),
     chatSearchInput: document.getElementById('chat-search-input'),
     chatSearchClear: document.getElementById('chat-search-clear'),
-    chatSearchScope: document.getElementById('chat-search-scope'),
+    chatSearchScope: document.getElementById('search-scope-btn'),
     chatSearchDropdown: document.getElementById('chat-search-dropdown'),
 
     // 顶部云同步状态按钮（图标固定，仅文字部分动态更新）
@@ -4373,7 +4373,18 @@
   /**
    * 重绘历史会话列表：置顶「收藏夹」分组 +「全部对话」分组
    */
+  function refreshCurrentChatTitle() {
+    var label = document.getElementById('current-chat-title');
+    if (!label) return;
+    var session = getCurrentSession();
+    var name = session && session.title ? session.title : '新对话';
+    var sub = session && getActiveSubChat(session);
+    if (sub && session.subChats && session.subChats[0] !== sub && sub.title) name += ' · ' + sub.title;
+    label.textContent = name;
+    label.title = name;
+  }
   function renderSessionList() {
+    refreshCurrentChatTitle();
     els.sessionList.innerHTML = '';
     selectedSessionIds.forEach(function (id) { if (!getSession(id)) selectedSessionIds.delete(id); });
 
@@ -4797,9 +4808,17 @@
   /**
    * 展开抽屉式侧边栏（仅手机端有视觉效果）
    */
+  function syncSidebarToggle() {
+    if (!els.menuBtn || !els.sidebar) return;
+    var expanded = isMobileView() ? els.sidebar.classList.contains('open') : !els.sidebar.classList.contains('sidebar-collapsed');
+    els.menuBtn.setAttribute('aria-expanded', String(expanded));
+    els.menuBtn.title = expanded ? '收起会话列表' : '展开会话列表';
+    els.menuBtn.setAttribute('aria-label', els.menuBtn.title);
+  }
   function openSidebar() {
     els.sidebar.classList.add('open');
     els.sidebarMask.classList.add('show');
+    syncSidebarToggle();
   }
 
   /**
@@ -4808,6 +4827,7 @@
   function closeSidebar() {
     els.sidebar.classList.remove('open');
     els.sidebarMask.classList.remove('show');
+    syncSidebarToggle();
   }
 
   // === [ANCHOR: MSG_ACTIONS_EDIT] 单条消息操作栏与原位编辑模式 ===
@@ -5976,6 +5996,7 @@
   }
 
   function renderMessages(options) {
+    refreshCurrentChatTitle();
     if (!els.chatArea) return;
     var opts = options && typeof options === 'object' ? options : {};
     var currentSession = getCurrentSession();
@@ -6538,8 +6559,8 @@
     config.gistId = typeof saved.gistId === 'string' ? saved.gistId.trim() : '';
     config.autoSync = saved.autoSync === true;
     normalizeDisplaySettings(config, saved);
-    config.toolbarOrder = normalizeToolbarOrder(readStorageValue(TOOLBAR_ORDER_KEY) || saved.toolbarOrder);
-    config.toolbarCompact = normalizeToolbarCompact(readStorageValue(TOOLBAR_COMPACT_KEY) || saved.toolbarCompact);
+    toolbarOrder = normalizeToolbarOrder(readStorageValue(TOOLBAR_ORDER_KEY));
+    toolbarCompact = normalizeToolbarCompact(readStorageValue(TOOLBAR_COMPACT_KEY));
     applyChatFontSize();
   }
 
@@ -9829,6 +9850,7 @@
    * 渲染内部对话列表：标题 + 当前标记 + 层数 / 更新时间 + 切换 / 重命名 / 删除
    */
   function renderSubChatList() {
+    refreshCurrentChatTitle();
     if (!els.subchatList) return;
     els.subchatList.innerHTML = '';
 
@@ -11692,7 +11714,7 @@
    * 取范围胶囊的显示文字
    */
   function getSearchScopeLabel(scope) {
-    return scope === 'all' ? '所有对话' : '当前对话';
+    return scope === 'all' ? '全部' : '当前';
   }
 
   /**
@@ -11834,7 +11856,8 @@
 
   // 移动端仅展开搜索组件，不另建检索入口或存储状态。
   function openSearch() {
-    if (els.headerSearchWrap) els.headerSearchWrap.classList.add('is-open');
+    if (isDraggingToolbar) return;
+    if (els.headerSearchWrap) els.headerSearchWrap.classList.add('search-expanded');
     if (els.chatSearchToggle) els.chatSearchToggle.setAttribute('aria-expanded', 'true');
     closeSidebar();
     if (els.chatSearchInput) els.chatSearchInput.focus();
@@ -11843,7 +11866,9 @@
 
   function closeSearch(restoreFocus) {
     closeSearchDropdown();
-    if (els.headerSearchWrap) els.headerSearchWrap.classList.remove('is-open');
+    if (els.headerSearchWrap) els.headerSearchWrap.classList.remove('search-expanded');
+    if (els.chatSearchInput) els.chatSearchInput.value = '';
+    if (els.chatSearchClear) els.chatSearchClear.hidden = true;
     if (els.chatSearchToggle) els.chatSearchToggle.setAttribute('aria-expanded', 'false');
     if (els.chatSearchInput) els.chatSearchInput.blur();
     if (restoreFocus && els.chatSearchToggle && window.matchMedia('(max-width: 768px)').matches) {
@@ -12060,7 +12085,7 @@
   function bindSearchEvents() {
     if (!els.chatSearchInput) return;
     if (els.chatSearchToggle) els.chatSearchToggle.addEventListener('click', function () {
-      if (els.headerSearchWrap.classList.contains('is-open')) closeSearch(true);
+      if (els.headerSearchWrap.classList.contains('search-expanded')) closeSearch(true);
       else openSearch();
     });
     if (els.chatSearchClose) els.chatSearchClose.addEventListener('click', function () {
@@ -12127,13 +12152,14 @@
     document.addEventListener('click', function (e) {
       if (!els.headerSearchWrap) return;
       if (els.headerSearchWrap.contains(e.target)) return;
-      closeSearch(false);
+      closeSearchDropdown();
+      if (!els.chatSearchInput.value.trim()) closeSearch(false);
     });
 
     // Esc 同时关闭空输入状态，焦点退回移动端入口。
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
-      if (!els.headerSearchWrap || (!els.headerSearchWrap.classList.contains('is-open') &&
+      if (!els.headerSearchWrap || (!els.headerSearchWrap.classList.contains('search-expanded') &&
           els.chatSearchDropdown.hidden && document.activeElement !== els.chatSearchInput)) return;
       closeSearch(true);
     });
@@ -12735,12 +12761,10 @@
       theme: uiState.dark ? 'dark' : 'light',
       // 历史偏好仅用于备份兼容，不再控制布局。
       wideView: localStorage.getItem(VIEW_KEY) === 'wide' ? 'wide' : 'bubble',
-      config: Object.assign({}, config),
+      config: stripLocalUiSettings(config),
       settings: {
         chatFontSizeDesktop: config.chatFontSizeDesktop,
-        chatFontSizeMobile: config.chatFontSizeMobile,
-        toolbarOrder: normalizeToolbarOrder(config.toolbarOrder),
-        toolbarCompact: normalizeToolbarCompact(config.toolbarCompact)
+        chatFontSizeMobile: config.chatFontSizeMobile
       }
     };
 
@@ -12773,7 +12797,7 @@
     var mirror = readStorageValue(CLOUD_MIRROR_KEY);
     var extensionBytes = 0;
     if (mirror && typeof mirror === 'object' && !Array.isArray(mirror)) {
-      Object.keys(mirror).forEach(function (key) {
+      Object.keys(stripLocalUiSettings(mirror)).forEach(function (key) {
         if (Object.prototype.hasOwnProperty.call(payload, key) ||
             /^(?:__proto__|constructor|prototype)$/.test(key) ||
             /session|message|snapshot|backup|history|payload|content|data|config|provider|preset|worldbook/i.test(key)) return;
@@ -12786,6 +12810,7 @@
       });
     }
     // 会话始终无损打包；仅移除云连接凭证，不裁剪任何历史内容。
+    payload = stripLocalUiSettings(payload);
     payload.syncConfig = getSyncConfig();
     if (forCloud === true) {
       ['syncToken', 's3AccessKey', 's3SecretKey'].forEach(function (key) {
@@ -13109,7 +13134,7 @@
     var keys = [CONFIG_KEY, SYNC_CONFIG_KEY, PROVIDERS_KEY, ACTIVE_TARGET_KEY, SESSIONS_KEY, CURRENT_ID_KEY,
       LAST_MODIFIED_KEY, THEME_KEY, VIEW_KEY, CHAT_PARAMS_KEY, PROMPT_PRESETS_KEY,
       REGEX_RULES_KEY, WORLDBOOKS_KEY, VOCAB_RULES_KEY, QUICK_REPLIES_KEY,
-      GLOBAL_TAVERN_VARS_KEY, AUTO_RETRY_KEY, IMAGE_GEN_CONFIG_KEY, TOOLBAR_ORDER_KEY, TOOLBAR_COMPACT_KEY, CLOUD_MIRROR_KEY];
+      GLOBAL_TAVERN_VARS_KEY, AUTO_RETRY_KEY, IMAGE_GEN_CONFIG_KEY, CLOUD_MIRROR_KEY];
     var storage = {};
     keys.forEach(function (key) { storage[key] = localStorage.getItem(key); });
     return { storage: storage, cache: new Map(storageCache), memory: JSON.parse(JSON.stringify({config: config,
@@ -13289,9 +13314,10 @@
     // 本地备份完整恢复连接字段；云端拉取保留目标设备连接字段。
     if (payload.config && typeof payload.config === 'object' && !Array.isArray(payload.config)) {
       var localConnection = getSyncConfig();
-      config = Object.assign({}, payload.config, config, localConnection);
-      Object.keys(payload.config).forEach(function (key) {
-        if (options.source === 'local' || !Object.prototype.hasOwnProperty.call(localConnection, key)) config[key] = payload.config[key];
+      var incomingConfig = stripLocalUiSettings(payload.config);
+      config = Object.assign({}, incomingConfig, config, localConnection);
+      Object.keys(incomingConfig).forEach(function (key) {
+        if (options.source === 'local' || !Object.prototype.hasOwnProperty.call(localConnection, key)) config[key] = incomingConfig[key];
       });
       requireStorageWrite(persistConfig(true));
     }
@@ -13309,14 +13335,7 @@
         fontSource.chatFontSizeDesktop = displaySettings.chatFontSize;
       }
       normalizeDisplaySettings(config, fontSource);
-      if (displaySettings.toolbarOrder && typeof displaySettings.toolbarOrder === 'object') {
-        config.toolbarOrder = normalizeToolbarOrder(displaySettings.toolbarOrder);
-        requireStorageWrite(writeStorageValue(TOOLBAR_ORDER_KEY, config.toolbarOrder));
-      }
-      if (displaySettings.toolbarCompact && typeof displaySettings.toolbarCompact === 'object') {
-        config.toolbarCompact = normalizeToolbarCompact(displaySettings.toolbarCompact);
-        requireStorageWrite(writeStorageValue(TOOLBAR_COMPACT_KEY, config.toolbarCompact));
-      }
+      // 工具栏及侧栏偏好严格留在本机，忽略历史云包中的同名字段。
       requireStorageWrite(persistConfig(true));
       applyChatFontSize();
       applyToolbarOrder();
@@ -14119,6 +14138,14 @@
     });
   }
 
+  // 本机界面偏好不得通过配置、扩展镜像或历史备份进入同步载荷。
+  function stripLocalUiSettings(source) {
+    var result = Object.assign({}, source);
+    Object.keys(result).forEach(function (key) {
+      if (/toolbar.?order|toolbar.?compact|sidebar.*collapsed/i.test(key)) delete result[key];
+    });
+    return result;
+  }
   // 工具栏只移动原节点，保留插件引用与所有点击监听。
   function normalizeToolbarOrder(order) {
     var result = {};
@@ -14144,7 +14171,7 @@
     return result;
   }
   function applyToolbarCompact() {
-    var compact = normalizeToolbarCompact(config.toolbarCompact);
+    var compact = normalizeToolbarCompact(toolbarCompact);
     document.querySelectorAll('[data-toolbar-item]').forEach(function (el) {
       el.classList.toggle('is-compact', compact[el.dataset.toolbarItem] === true);
     });
@@ -14152,20 +14179,17 @@
   function toggleToolbarCompact(item) {
     var id = item.dataset.toolbarItem;
     if (id === 'search') return;
-    var previous = config.toolbarCompact;
+    var previous = toolbarCompact;
     var compact = normalizeToolbarCompact(previous);
     compact[id] = !item.classList.contains('is-compact');
-    var keys = [TOOLBAR_COMPACT_KEY, CONFIG_KEY];
+    var keys = [TOOLBAR_COMPACT_KEY];
     var saved = keys.map(function (key) { return readStorageRaw(key); });
-    config.toolbarCompact = compact;
+    toolbarCompact = compact;
     applyToolbarCompact();
     try {
       requireStorageWrite(writeStorageValue(TOOLBAR_COMPACT_KEY, compact));
-      requireStorageWrite(writeStorageValue(CONFIG_KEY, config));
-      touchLastModified();
-      scheduleCloudUpload();
     } catch (error) {
-      config.toolbarCompact = previous;
+      toolbarCompact = previous;
       keys.forEach(function (key, index) {
         try {
           if (saved[index] == null) { localStorage.removeItem(key); storageCache.delete(key); }
@@ -14178,7 +14202,7 @@
   }
   function applyToolbarOrder() {
     applyToolbarCompact();
-    var orders = normalizeToolbarOrder(config.toolbarOrder);
+    var orders = normalizeToolbarOrder(toolbarOrder);
     document.querySelectorAll('[data-toolbar-track]').forEach(function (track) {
       if (track.dataset.sorting === 'true') return;
       var nodes = toolbarItems(track);
@@ -14191,21 +14215,18 @@
     });
   }
   function saveToolbarOrder(track) {
-    var order = normalizeToolbarOrder(config.toolbarOrder);
+    var order = normalizeToolbarOrder(toolbarOrder);
     var ids = toolbarItems(track).map(function (el) { return el.dataset.toolbarItem; });
     // 尚未挂载的插件仍保留在顺序尾部，避免保存时丢失。
     order[track.dataset.toolbarTrack] = ids.concat(order[track.dataset.toolbarTrack].filter(function (id) { return ids.indexOf(id) === -1; }));
-    var previous = config.toolbarOrder;
-    var keys = [TOOLBAR_ORDER_KEY, CONFIG_KEY];
+    var previous = toolbarOrder;
+    var keys = [TOOLBAR_ORDER_KEY];
     var saved = keys.map(function (key) { return readStorageRaw(key); });
-    config.toolbarOrder = order;
+    toolbarOrder = order;
     try {
       requireStorageWrite(writeStorageValue(TOOLBAR_ORDER_KEY, order));
-      requireStorageWrite(writeStorageValue(CONFIG_KEY, config));
-      touchLastModified();
-      scheduleCloudUpload();
     } catch (error) {
-      config.toolbarOrder = previous;
+      toolbarOrder = previous;
       keys.forEach(function (key, index) {
         try {
           if (saved[index] == null) { localStorage.removeItem(key); storageCache.delete(key); }
@@ -14252,6 +14273,10 @@
       } else if (save && item && isLongPressReady && !hasDraggedSort) {
         toggleToolbarCompact(item);
       }
+      if (isLongPressReady || active) {
+        isDraggingToolbar = true;
+        setTimeout(function () { isDraggingToolbar = false; }, 700);
+      }
       active = null; pending = null;
       isLongPressReady = false; hasDraggedSort = false;
     }
@@ -14273,7 +14298,7 @@
       }
       if (event.cancelable) event.preventDefault();
       if (!hasDraggedSort && Math.abs(x - pending.x) >= 10) {
-        hasDraggedSort = true; active = pending.item;
+        hasDraggedSort = true; active = pending.item; isDraggingToolbar = true;
         track.dataset.sorting = 'true';
         active.classList.remove('long-press-ready');
         active.classList.add('dragging-sort');
@@ -14285,7 +14310,7 @@
       return target.closest('input, textarea, select, [role="dialog"], .chat-search-dropdown, .quick-model-panel');
     }
     track.addEventListener('click', function (e) {
-      if (Date.now() < blockClickUntil) { e.preventDefault(); e.stopImmediatePropagation(); }
+      if (isDraggingToolbar || Date.now() < blockClickUntil) { e.preventDefault(); e.stopImmediatePropagation(); }
     }, true);
     track.addEventListener('dragstart', function (e) {
       var item = itemAt(e.target);
@@ -14315,7 +14340,13 @@
       if (e.touches.length !== 1 || e.touches[0].identifier !== pending.id) { finish(false); return; }
       move(e.touches[0].clientX, e.touches[0].clientY, e);
     }, { passive: false });
-    track.addEventListener('touchend', function () { lastTouchUntil = Date.now() + 1000; finish(true); });
+    track.addEventListener('touchend', function (e) {
+      if (isLongPressReady || hasDraggedSort) {
+        if (e.cancelable) e.preventDefault();
+        e.stopPropagation();
+      }
+      lastTouchUntil = Date.now() + 1000; finish(true);
+    }, { passive: false, capture: true });
     track.addEventListener('touchcancel', function () { finish(false); });
     track.addEventListener('mousedown', function (e) {
       if (e.button !== 0 || Date.now() < lastTouchUntil) return;
@@ -14880,6 +14911,14 @@
     // 手机端汉堡菜单：展开 / 收起抽屉
     if (els.menuBtn) {
       els.menuBtn.addEventListener('click', function () {
+        if (!isMobileView()) {
+          var collapsed = !els.sidebar.classList.contains('sidebar-collapsed');
+          try { localStorage.setItem(DESKTOP_SIDEBAR_KEY, String(collapsed)); }
+          catch (error) { showToast('侧栏状态保存失败'); return; }
+          els.sidebar.classList.toggle('sidebar-collapsed', collapsed);
+          syncSidebarToggle();
+          return;
+        }
         if (els.sidebar && els.sidebar.classList.contains('open')) {
           closeSidebar();
         } else {
@@ -14896,6 +14935,7 @@
     // 窗口尺寸变化：回到宽屏时清除抽屉状态，避免出现半屏残留
     window.addEventListener('resize', function () {
       if (!isMobileView()) closeSidebar();
+      syncSidebarToggle();
     });
 
     // 设置弹窗
@@ -15393,6 +15433,8 @@
     loadUiPrefs();
     applyUiPrefs();
 
+    if (els.sidebar) els.sidebar.classList.toggle('sidebar-collapsed', localStorage.getItem(DESKTOP_SIDEBAR_KEY) === 'true');
+    syncSidebarToggle();
     bindEvents();
     renderQuickModelSelect(); // 底部快捷选择器必须在首次渲染前就绪
     renderSessionList();
