@@ -688,33 +688,41 @@
       .toLowerCase().split(/[_\-\s]+/).filter(Boolean);
   }
 
-  // 只剥离最外层；同名嵌套计数，注释与 CDATA 内的标签不参与扫描。
+  // 提示词不是严格 XML：只找独占一行的同名配对，正文标签一律不校验。
   function parseTopLevelXmlBlocks(rawText) {
-    var text = String(rawText || '').replace(/^\uFEFF/, '');
-    var tokens = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\/?([a-zA-Z0-9_\u3400-\u9fff-]+)\s*>/g;
-    var blocks = [], stack = [], start = 0, bodyStart = 0, consumed = 0, match;
+    var text = String(rawText || '').replace(/\r\n/g, '\n');
+    var blocks = [], consumed = 0, match;
     function loose(end) {
       var content = text.slice(consumed, end);
       if (content.trim()) blocks.push({ tag: '', name: blocks.length ? '补充说明' : '前置说明', content: content });
     }
-    while ((match = tokens.exec(text))) {
-      if (!match[1]) continue;
-      var closing = match[0].charAt(1) === '/';
-      if (!closing) {
-        if (!stack.length) { loose(match.index); start = match.index; bodyStart = tokens.lastIndex; }
-        stack.push(match[1]);
-      } else {
-        if (!stack.length || stack[stack.length - 1] !== match[1]) throw new Error('XML 标签不匹配');
-        var tag = stack.pop();
-        if (!stack.length) {
-          blocks.push({ tag: tag, content: text.slice(bodyStart, match.index) });
-          consumed = tokens.lastIndex;
-        }
-      }
+    // 保留既有中文开场标签兼容；只允许行内空格，不跨行吞掉正文。
+    var starts = /^[ \t]*<([a-zA-Z0-9_\u3400-\u9fff-]+)>[ \t]*$/gm;
+    while ((match = starts.exec(text))) {
+      var closing = new RegExp('^[ \\t]*</' + match[1] + '>[ \\t]*$', 'gm');
+      closing.lastIndex = starts.lastIndex;
+      var end = closing.exec(text);
+      if (!end) continue;
+      loose(match.index);
+      var bodyStart = starts.lastIndex;
+      if (text.charAt(bodyStart) === '\n') bodyStart++;
+      blocks.push({ tag: match[1], content: text.slice(bodyStart, end.index) });
+      consumed = closing.lastIndex;
+      starts.lastIndex = consumed;
     }
-    if (stack.length) throw new Error('XML 标签未闭合');
+    if (blocks.some(function (block) { return block.tag; })) {
+      loose(text.length);
+      return blocks;
+    }
+    // 只有未发现任何整行块时才回退紧凑格式；不使用全局标签栈。
+    var compact = /<([a-zA-Z0-9_\u3400-\u9fff-]+)>([\s\S]*?)<\/\1>/g;
+    while ((match = compact.exec(text))) {
+      loose(match.index);
+      blocks.push({ tag: match[1], content: match[2] });
+      consumed = compact.lastIndex;
+    }
     loose(text.length);
-    if (!blocks.some(function (block) { return block.tag; })) throw new Error('未找到 XML 模块');
+    if (!blocks.length) blocks.push({ tag: '', name: '前置说明', content: text });
     return blocks;
   }
 
