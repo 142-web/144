@@ -1064,8 +1064,11 @@
       try {
         refreshTopPresetUI();
         refreshPresetButtonState();
+        renderPresetSelect();
         renderTopPresetSelect();
         renderTopPresetModules();
+        if (els.presetModal && els.presetModal.classList.contains('show')) renderPresetModules();
+        refreshMemoryContext();
       } catch (err) {
         console.warn('[MyChat] 预设界面刷新失败：', err);
       }

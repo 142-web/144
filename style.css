@@ -3665,6 +3665,38 @@ body {
   background: var(--cot-bg);
 }
 
+/* ===== 预设双通道导入：选择器紧凑，编辑弹窗独立滚动 ===== */
+#tp-import-btn { display: inline-flex; align-items: center; gap: 4px; }
+.preset-import-dialog {
+  box-sizing: border-box; width: 580px; max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 32px); padding: 18px; overflow: auto;
+  border: 1px solid var(--border); border-radius: 12px;
+  color: var(--text); background: var(--panel, var(--bg));
+  box-shadow: 0 16px 56px #0004;
+}
+.preset-import-dialog::backdrop { background: #0006; }
+.preset-import-dialog header, .preset-import-dialog footer, .preset-import-text-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+}
+.preset-import-dialog header { margin-bottom: 14px; }
+.preset-import-dialog h2 { font-size: 16px; margin: 0; }
+.preset-import-dialog label { display: block; font-size: 13px; }
+.preset-import-dialog input, .preset-import-dialog textarea {
+  box-sizing: border-box; width: 100%; min-width: 0; margin: 8px 0 12px; padding: 9px;
+  border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--bg);
+}
+.preset-import-dialog textarea { resize: vertical; min-height: 120px; max-height: 48vh; font: 13px/1.6 monospace; }
+.preset-import-dialog footer { justify-content: flex-end; }
+.preset-import-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 30px; height: 30px; padding: 6px; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); background: transparent; cursor: pointer; }
+.preset-import-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.preset-import-icon:hover, .preset-import-option:hover { color: var(--accent); border-color: var(--accent); }
+.preset-import-icon:disabled { opacity: .45; cursor: wait; }
+.preset-import-choice { width: 250px; padding: 12px; }
+.preset-import-option { display: block; width: 100%; text-align: left; margin-top: 8px; padding: 10px;
+  border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: transparent; cursor: pointer; }
+
 /* ===== 预设管理主弹窗 ===== */
 .modal.preset-modal {
   z-index: 55;

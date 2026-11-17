@@ -898,6 +898,9 @@
     if (host.closeInputToolbox) host.closeInputToolbox();
     if (!dialog.open) dialog.showModal();
   }
+  document.addEventListener('mychat-preset-imported', function () {
+    if (dialog && dialog.open) { invalidate(); render(); }
+  });
   window.MyChatPresetWorkbench = { open: open, close: function () { if (dialog) dialog.close(); }, diffTexts: diffTexts };
   var trigger = document.getElementById('open-preset-workbench-btn');
   if (trigger) trigger.addEventListener('click', open);

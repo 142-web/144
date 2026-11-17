@@ -663,6 +663,120 @@
     return preset;
   }
 
+  /* ================= 基础 XML 拆分与零 AI 中文转换 ================= */
+
+  var tagNames = Object.create(null);
+  [
+    ['role', '角色定位'], ['profile', '基础档案'], ['background', '背景设定'], ['skills', '核心技能'],
+    ['rules', '核心规则'], ['workflow', '工作流程'], ['output_format', '输出格式'], ['initialization', '开场白与初始化'],
+    ['constraints', '约束与限制'], ['guidelines', '行动指南'], ['objective goals mission', '核心目标'],
+    ['context', '上下文背景'], ['persona character', '人设详情'], ['style tone voice', '语言风格'],
+    ['examples few_shot', '参考示例'], ['knowledge lore worldview', '知识库与世界观'], ['memory', '记忆机制'],
+    ['task instructions system_prompt', '任务指令'], ['thinking reasoning cot', '思考与推演'],
+    ['safety boundaries', '安全与边界'], ['tools functions', '工具调用'], ['input user_input', '输入规范'],
+    ['output', '输出要求'], ['attention note warning important', '重要注意事项'], ['fallback error_handling', '异常处理'],
+    ['criteria evaluation', '评估标准'], ['steps process', '执行步骤'], ['summary', '总结要求'], ['format', '格式规范']
+  ].forEach(function (pair) { pair[0].split(' ').forEach(function (key) { tagNames[key] = pair[1]; }); });
+
+  var roots = Object.create(null);
+  ('user:用户 ai:人工智能 assistant:助手 system:系统 core:核心 basic:基础 advanced:高级 detail:详细 strict:严格 hard:硬性 soft:弹性 custom:自定义 global:全局 local:局部 chat:对话 reply:回复 response:响应 message:消息 history:历史 current:当前 state:状态 status:状态 setting:设置 config:配置 logic:逻辑 action:动作 behavior:行为 emotion:情绪 relationship:关系 scene:场景 plot:剧情 writing:写作 review:审查 audit:审计 risk:风险 control:控制 financial:金融 asset:资产 data:数据 analysis:分析 template:模板 structure:结构 list:列表 table:表格 запрет:禁止 ban:禁止 forbid:禁止 prohibit:禁止 must:必须 role:角色 profile:档案 background:背景 skill:技能 rule:规则 work:工作 flow:流程 workflow:工作流程 output:输出 input:输入 format:格式 initialization:初始化 constraint:约束 guideline:指南 objective:目标 goal:目标 mission:使命 context:上下文 persona:人设 character:角色 style:风格 tone:语气 voice:口吻 example:示例 few:少量 shot:示例 knowledge:知识 lore:设定 worldview:世界观 memory:记忆 task:任务 instruction:指令 prompt:提示词 thinking:思考 reasoning:推演 cot:思维链 safety:安全 boundary:边界 tool:工具 function:函数 attention:注意 note:备注 warning:警告 important:重要 fallback:兜底 error:异常 handling:处理 criteria:标准 evaluation:评估 step:步骤 process:流程 summary:总结 language:语言 author:作者 version:版本 description:描述 name:名称 gender:性别 age:年龄 personality:性格 model:模型 text:文本 content:内容 section:章节 module:模块 priority:优先级 order:顺序 first:首要 last:最后 before:之前 after:之后 main:主要 secondary:次要 special:特殊 general:通用 default:默认 optional:可选 required:必需 positive:正向 negative:负向 allow:允许 deny:拒绝 limit:限制 length:长度 time:时间 date:日期 number:数量 value:数值 key:键 information:信息 fact:事实 truth:真实 accuracy:准确 quality:质量 check:检查 validation:校验 security:安全 privacy:隐私 identity:身份 purpose:目的 target:目标 result:结果 answer:回答 question:问题 request:请求 instruction:指令 execution:执行 plan:计划 strategy:策略 policy:策略 principle:原则 standard:标准 mode:模式 detail:详细 introduction:介绍 opening:开场 ending:结尾 start:开始 end:结束 professional:专业 personal:个人 finance:财务 investment:投资 wealth:财富 budget:预算 income:收入 expense:支出 family:家庭 defense:防御 management:管理 manager:管理器 engine:引擎 mechanism:机制 description:描述 definition:定义 interaction:交互 dialogue:对话 narration:叙事 story:故事 world:世界 environment:环境 emotional:情绪 internal:内部 external:外部 hidden:隐藏 visible:可见 final:最终 initial:初始 dynamic:动态 static:静态 creative:创意 creativity:创造力 reasoning:推演 reasoning:推演').split(' ').forEach(function (pair) {
+    var parts = pair.split(':'); roots[parts[0]] = parts[1];
+  });
+
+  function splitTagWords(tag) {
+    return tag.trim().replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .toLowerCase().split(/[_\-\s]+/).filter(Boolean);
+  }
+
+  // 只剥离最外层；同名嵌套计数，注释与 CDATA 内的标签不参与扫描。
+  function parseTopLevelXmlBlocks(rawText) {
+    var text = String(rawText || '').replace(/^\uFEFF/, '');
+    var tokens = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\/?([a-zA-Z0-9_-]+)\s*>/g;
+    var blocks = [], stack = [], start = 0, bodyStart = 0, consumed = 0, match;
+    function loose(end) {
+      var content = text.slice(consumed, end);
+      if (content.trim()) blocks.push({ tag: '', name: blocks.length ? '补充说明' : '前置说明', content: content });
+    }
+    while ((match = tokens.exec(text))) {
+      if (!match[1]) continue;
+      var closing = match[0].charAt(1) === '/';
+      if (!closing) {
+        if (!stack.length) { loose(match.index); start = match.index; bodyStart = tokens.lastIndex; }
+        stack.push(match[1]);
+      } else {
+        if (!stack.length || stack[stack.length - 1] !== match[1]) throw new Error('XML 标签不匹配');
+        var tag = stack.pop();
+        if (!stack.length) {
+          blocks.push({ tag: tag, content: text.slice(bodyStart, match.index) });
+          consumed = tokens.lastIndex;
+        }
+      }
+    }
+    if (stack.length) throw new Error('XML 标签未闭合');
+    loose(text.length);
+    if (!blocks.some(function (block) { return block.tag; })) throw new Error('未找到 XML 模块');
+    return blocks;
+  }
+
+  function chineseTitle(content) {
+    var first = content.trim().split(/\r?\n/, 1)[0].trim();
+    var title = first.replace(/^#{1,6}\s*/, '').replace(/^【([^】]+)】$/, '$1').trim();
+    return /^[\u3400-\u9fff]{1,15}$/.test(title) ? title : '';
+  }
+
+  async function translateTag(tag) {
+    var controller = typeof AbortController === 'function' ? new AbortController() : null;
+    var timer;
+    try {
+      // 仅传标签名，不外发正文、预设名称或凭据；超时与断网静默降级。
+      var timeout = new Promise(function (resolve) { timer = setTimeout(function () { if (controller) controller.abort(); resolve(''); }, 1500); });
+      var request = fetch('https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=' + encodeURIComponent(splitTagWords(tag).join(' ')), {
+        signal: controller ? controller.signal : undefined, credentials: 'omit', referrerPolicy: 'no-referrer'
+      }).then(function (res) { return res.ok ? res.json() : null; }).then(function (data) {
+        var value = data && Array.isArray(data[0]) ? data[0].map(function (part) { return part[0] || ''; }).join('').trim() : '';
+        return value.length <= 40 && /[\u3400-\u9fff]/.test(value) && !/[a-zA-Z]/.test(value) ? value : '';
+      }).catch(function () { return ''; });
+      return await Promise.race([request, timeout]);
+    } catch (err) { return ''; } finally { clearTimeout(timer); }
+  }
+
+  async function chineseModuleName(block, index, cache) {
+    if (!block.tag) return block.name;
+    var key = block.tag.trim().toLowerCase();
+    if (tagNames[key]) return tagNames[key];
+    var words = splitTagWords(block.tag);
+    var translated = words.map(function (word) { return roots[word] || roots[word.replace(/s$/, '')] || (/^\d+$/.test(word) ? word : ''); });
+    if (translated.every(Boolean)) return translated.join('');
+    var title = chineseTitle(block.content);
+    if (title) return title;
+    if (!cache[key]) cache[key] = translateTag(block.tag);
+    return await cache[key] || '自定义模块' + (index + 1);
+  }
+
+  function translateMetadata(content) {
+    var names = { author: '作者', version: '版本', language: '语言', description: '核心描述', name: '名称', gender: '性别', age: '年龄', personality: '性格特征' };
+    return content.replace(/^([\t ]*[-*+][\t ]+)(Author|Version|Language|Description|Name|Gender|Age|Personality)[\t ]*[:：][\t ]*/gim,
+      function (_, prefix, key) { return prefix + names[key.toLowerCase()] + '：'; });
+  }
+
+  async function importXmlPreset(rawText, name) {
+    var blocks = parseTopLevelXmlBlocks(rawText), cache = Object.create(null);
+    var role = blocks.find(function (block) { return block.tag.toLowerCase() === 'role'; });
+    var presetName = String(name || '').trim() || (role && role.content.trim().split(/\r?\n/, 1)[0].trim()) || 'XML导入预设';
+    var modules = await Promise.all(blocks.map(async function (block, index) {
+      return { id: uid('mod'), name: await chineseModuleName(block, index, cache), content: translateMetadata(block.content), enabled: true, roleType: 'system', keepPrefillInReply: false };
+    }));
+    // 翻译期间用户可能改库；在提交前重新取副本，不覆盖其改动。
+    if (!bridge.getCurrentSession || !bridge.getCurrentSession()) throw new Error('请先新建对话');
+    var preset = { id: uid('preset'), name: presetName, modules: modules, regexRules: [] };
+    var list = bridge.getPromptPresets(); list.push(preset);
+    if (!bridge.applyPresetWorkbenchChanges(list)) throw new Error('预设保存失败');
+    if (!bridge.setCurrentPreset(preset.id)) throw new Error('预设激活失败');
+    document.dispatchEvent(new CustomEvent('mychat-preset-imported', { detail: { presetId: preset.id } }));
+    toast('已成功拆分为 ' + modules.length + ' 个中文模块并激活预设「' + presetName + '」');
+    return preset;
+  }
+
   /* ================= 文件选择交互 ================= */
 
   function pickFile(accept) {
@@ -731,7 +845,7 @@
         toast('JSON 格式有误，无法解析预设');
         return;
       }
-      importTavernPreset(json, file.name || '');
+      window.MyChatTavern.importPreset(json, file.name || '');
     } catch (err) {
       console.error('[酒馆导入] 预设导入失败：', err);
       toast('导入预设失败：' + (err && err.message ? err.message : err));
@@ -766,9 +880,37 @@
       presetImportBtn.addEventListener('click', function (event) {
         event.preventDefault();
         event.stopPropagation();
-        importPresetFlow();
+        var chooser = document.getElementById('preset-import-choice');
+        if (chooser && !chooser.open) chooser.showModal();
       });
     }
+    var chooser = document.getElementById('preset-import-choice');
+    var xmlDialog = document.getElementById('xml-preset-dialog');
+    if (!chooser || !xmlDialog) return;
+    var text = document.getElementById('xml-preset-content');
+    var name = document.getElementById('xml-preset-name');
+    var submit = document.getElementById('xml-preset-submit');
+    var read = document.getElementById('xml-preset-read');
+    var busy = false;
+    document.getElementById('preset-import-json').onclick = function () { chooser.close(); importPresetFlow(); };
+    document.getElementById('preset-import-xml').onclick = function () { chooser.close(); xmlDialog.showModal(); name.focus(); };
+    document.querySelectorAll('[data-preset-import-close]').forEach(function (button) {
+      button.onclick = function () { if (!busy) button.closest('dialog').close(); };
+    });
+    xmlDialog.addEventListener('cancel', function (event) { if (busy) event.preventDefault(); });
+    read.onclick = async function () {
+      var file = await pickFile('.txt,.xml,.md,text/plain,text/xml,application/xml,text/markdown');
+      if (!file) return;
+      try { text.value = await readAsText(file); } catch (err) { toast('读取文件失败'); }
+    };
+    submit.onclick = async function () {
+      if (busy) return;
+      busy = true; submit.disabled = read.disabled = name.disabled = text.disabled = true;
+      xmlDialog.setAttribute('aria-busy', 'true');
+      try { await importXmlPreset(text.value, name.value); xmlDialog.close(); text.value = name.value = ''; }
+      catch (err) { toast(err.message || 'XML 导入失败'); }
+      finally { busy = false; submit.disabled = read.disabled = name.disabled = text.disabled = false; xmlDialog.removeAttribute('aria-busy'); }
+    };
   }
 
   if (document.readyState === 'loading') {
@@ -783,6 +925,8 @@
     // 直接把已解析的对象交给导入器（便于控制台调试 / 其他模块复用）
     importCharacterCard: importCharacterCard,
     importPreset: importTavernPreset,
+    parseTopLevelXmlBlocks: parseTopLevelXmlBlocks,
+    importXmlPreset: importXmlPreset,
     // 单独解析 PNG 角色卡（返回角色卡对象，不写入任何数据）
     parsePngCard: async function (file) {
       var buffer = await readAsArrayBuffer(file);

@@ -14,7 +14,7 @@
   <title>MyChat</title>
   <!-- 代码高亮深色主题（hljs 官方 atom-one-dark 配色，国内高速镜像） -->
   <link rel="stylesheet" href="https://cdn.staticfile.net/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
-  <link rel="stylesheet" href="style.css?v=20261117_37" />
+  <link rel="stylesheet" href="style.css?v=20261117_38" />
 </head>
 
 <body>
@@ -89,8 +89,8 @@
                 <button type="button" id="tp-new-btn" class="btn-mini">新建预设</button>
                 <button type="button" id="tp-rename-btn" class="btn-mini">重命名</button>
                 <button type="button" id="tp-delete-btn" class="btn-mini btn-mini-danger">删除</button>
-                <!-- 酒馆预设导入：由 modules/tavern-importer.js 注入交互 -->
-                <button type="button" id="tp-import-btn" class="btn-mini">导入酒馆预设</button>
+                <!-- 双通道预设导入，由独立导入器接管 -->
+                <button type="button" id="tp-import-btn" class="btn-mini" title="导入预设" aria-haspopup="dialog"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/></svg><span>导入预设</span></button>
               </div>
             </div>
             <!-- 中间：小模块列表（拖拽排序 / 编辑 / 删除 / 开关） -->
@@ -1012,7 +1012,21 @@
   <script src="https://cdn.staticfile.net/marked/12.0.2/marked.min.js"></script>
   <script src="https://cdn.staticfile.net/highlight.js/11.9.0/highlight.min.js"></script>
   <!-- 核心宿主引擎：必须最先加载，负责创建 window.MyChat 桥接器 -->
-  <script src="app.js?v=20261117_37"></script>
+  <dialog id="preset-import-choice" class="preset-import-dialog preset-import-choice" aria-labelledby="preset-import-title">
+    <header><h2 id="preset-import-title">导入预设</h2><button type="button" class="preset-import-icon" data-preset-import-close title="取消" aria-label="取消"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header>
+    <button type="button" id="preset-import-json" class="preset-import-option" title="导入酒馆预设 (JSON)">酒馆预设 (JSON)</button>
+    <button type="button" id="preset-import-xml" class="preset-import-option" title="导入基础 XML 预设 (粘贴文本 / 读取文件)">基础 XML 预设</button>
+  </dialog>
+  <dialog id="xml-preset-dialog" class="preset-import-dialog" aria-labelledby="xml-preset-title">
+    <header><h2 id="xml-preset-title">导入基础 XML 预设</h2><button type="button" class="preset-import-icon" data-preset-import-close title="取消" aria-label="取消"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header>
+    <label for="xml-preset-name">预设名称</label>
+    <input id="xml-preset-name" type="text" placeholder="留空自动提取" autocomplete="off">
+    <div class="preset-import-text-head"><label for="xml-preset-content">XML 内容</label><button type="button" id="xml-preset-read" class="preset-import-icon" title="从文件读取 (.txt / .xml / .md)" aria-label="从文件读取"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V4h6l2 3h10v13H3V7Zm0 3h18M12 12v6m-3-3 3 3 3-3"/></svg></button></div>
+    <textarea id="xml-preset-content" rows="13" placeholder="粘贴 XML 文本" spellcheck="false"></textarea>
+    <footer><button type="button" class="preset-import-icon" data-preset-import-close title="取消" aria-label="取消"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button><button type="button" id="xml-preset-submit" class="preset-import-icon" title="解析并创建中文模块预设" aria-label="解析并创建中文模块预设"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg></button></footer>
+  </dialog>
+
+  <script src="app.js?v=20261117_38"></script>
   <!-- 抓包基础设施：宿主创建后立即可用，早于记忆请求模块 -->
   <script src="modules/debug-inspector.js?v=20260405_21"></script>
   <script src="modules/task-hud.js?v=20260405_21"></script>
@@ -1034,7 +1048,7 @@
   <!-- 三层正则引擎：全局 / 预设 / 会话正则统一管理，接入 beforeSend / onReceive / onRender 阀门 -->
   <script src="modules/regex-engine.js?v=20260405_21"></script>
   <!-- 酒馆导入器：PNG（tEXt / zTXt / iTXt）角色卡解析 + 角色卡 / 酒馆预设一键导入 -->
-  <script src="modules/tavern-importer.js?v=20260405_21"></script>
+  <script src="modules/tavern-importer.js?v=20261117_38"></script>
   <script src="modules/vocab-mapping.js?v=20260405_21"></script>
   <script src="modules/quick-replies.js?v=20260405_21"></script>
   <script src="modules/external-chat-importer.js?v=20260405_21"></script>
@@ -1044,7 +1058,7 @@
   <script src="modules/attachments.js?v=20260405_21"></script>
   <script src="modules/auto-retry.js?v=20260405_21"></script>
   <script src="modules/image-generator.js?v=20260405_22"></script>
-  <script src="modules/preset-workbench.js?v=20261117_37"></script>
+  <script src="modules/preset-workbench.js?v=20261117_38"></script>
 </body>
 
 </html>
