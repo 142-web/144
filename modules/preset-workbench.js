@@ -5,7 +5,7 @@
   if (!host) return;
   var dialog, panels = [], diffBox, diffRows, status, collapseInput;
   var sides = [{ presetId: '', moduleId: '', afterId: '' }, { presetId: '', moduleId: '', afterId: '' }];
-  var review = null, opener = null, segmenter, undoButton, redoButton, drag = null;
+  var review = null, opener = null, undoButton, redoButton, drag = null;
   var undoStack = [], redoStack = [], expanded = new Set();
   var selectedLeftIds = [], selectedRightIds = [], workbenchMode = 'iterate';
   var columns, iterationPane, pasteBox, fusionBar, fusionLeft, fusionRight, compareButton, modeButtons = [];
@@ -55,7 +55,6 @@
   }
   function selectedIds(side) { return side ? selectedRightIds : selectedLeftIds; }
   function clearSelection(side) { selectedIds(side).length = 0; }
-  try { segmenter = new Intl.Segmenter('zh-CN', { granularity: 'word' }); } catch (_) {}
   var paths = {
     close: 'M6 6l12 12M6 18L18 6', copy: 'M9 9h12v12H9zM5 15H3V3h12v2',
     copyRight: 'M3 5h10v14H3zM8 9h5m4-1 4 4-4 4m-4-4h8',
@@ -408,8 +407,8 @@
   // 保留原始空行及换行，拼接输出可逐字还原输入。
   function paragraphs(text) { return text.match(/[^\r\n]+(?:\r?\n(?![\t ]*\r?\n)[^\r\n]+)*(?:\r?\n[\t ]*)*|[\r\n]+/g) || []; }
   function tokens(text) {
-    if (segmenter) return Array.from(segmenter.segment(text), function (part) { return part.segment; });
-    return text.match(/[\u3400-\u9fff]{1,3}|[a-zA-Z0-9_]+|\s+|[^\s]/g) || [];
+    // 汉字及标点逐个独立，连续英文数字成词；不依赖分词器的词组边界。
+    return text.match(/[a-zA-Z0-9]+|\s+|[^\s]/gu) || [];
   }
   function lcsOps(a, b, limit) {
     if ((a.length + 1) * (b.length + 1) > limit) return null;
@@ -427,8 +426,14 @@
     return ops;
   }
   function inlineDiff(a, b) {
-    var ops = lcsOps(tokens(a), tokens(b), 180000);
-    if (!ops) return [{ type: 'change', left: a, right: b }];
+    var ta = tokens(a), tb = tokens(b), start = 0, endA = ta.length, endB = tb.length;
+    // 公共首尾先直通，长句删短也不受中间编辑矩阵上限影响。
+    while (start < endA && start < endB && ta[start] === tb[start]) start++;
+    while (endA > start && endB > start && ta[endA - 1] === tb[endB - 1]) { endA--; endB--; }
+    var ops = lcsOps(ta.slice(start, endA), tb.slice(start, endB), 180000);
+    if (!ops) ops = [{ type: 'del', text: ta.slice(start, endA).join('') }, { type: 'add', text: tb.slice(start, endB).join('') }];
+    if (start) ops.unshift({ type: 'same', text: ta.slice(0, start).join('') });
+    if (endA < ta.length) ops.push({ type: 'same', text: ta.slice(endA).join('') });
     // 两处变化之间仅一两个未改字符时，连为一个局部高亮区。
     for (var i = 1; i < ops.length - 1; i++) {
       if (ops[i].type === 'same' && Array.from(ops[i].text).length <= 2 && ops[i - 1].type !== 'same' && ops[i + 1].type !== 'same') ops[i].type = 'bridge';
@@ -449,11 +454,16 @@
     function row(x, y, kind) {
       rows.push({ left: x, right: y, kind: kind, parts: kind === 'rewrite' && !fast ? inlineDiff(x, y) : null });
     }
+    // 单个非空段落（含局部选区）无条件进入段内比对，空白仍逐字保留。
+    if (a.filter(function (p) { return p.trim(); }).length === 1 && b.filter(function (p) { return p.trim(); }).length === 1) {
+      rows.push({ left: left, right: right, kind: left === right ? 'same' : 'rewrite', parts: left === right ? null : inlineDiff(left, right) });
+      return { rows: rows, fast: fast };
+    }
     if (!fast) {
-      var pa = a.map(profile), pb = b.map(profile), width = b.length + 1;
+      var pa = a.map(function (p) { return profile(p.trim()); }), pb = b.map(function (p) { return profile(p.trim()); }), width = b.length + 1;
       var dp = new Float64Array((a.length + 1) * width), scores = new Float64Array(a.length * b.length);
       for (i = a.length - 1; i >= 0; i--) for (j = b.length - 1; j >= 0; j--) {
-        var score = a[i] === b[j] ? 2 : similarity(pa[i], pb[j]); scores[i * b.length + j] = score;
+        var score = a[i] === b[j] ? 2 : calculateSim(a[i], b[j], pa[i], pb[j]); scores[i * b.length + j] = score;
         dp[i * width + j] = Math.max(dp[(i + 1) * width + j], dp[i * width + j + 1], score >= 0.4 ? score + dp[(i + 1) * width + j + 1] : -1);
       }
       i = 0; j = 0;
@@ -473,7 +483,7 @@
         var nextB = lookB < 0 ? -1 : j + 1 + lookB, nextA = lookA < 0 ? -1 : i + 1 + lookA;
         if (nextB >= 0 && nextB - j <= 8 && (nextA < 0 || nextB - j <= nextA - i)) { while (j < nextB) row('', b[j++], 'add'); }
         else if (nextA >= 0 && nextA - i <= 8) { while (i < nextA) row(a[i++], '', 'del'); }
-        else if (similarity(profile(a[i]), profile(b[j])) >= 0.4) row(a[i++], b[j++], 'rewrite');
+        else if (calculateSim(a[i], b[j]) >= 0.4) row(a[i++], b[j++], 'rewrite');
         else { row(a[i++], '', 'del'); row('', b[j++], 'add'); }
       }
     }
@@ -561,7 +571,30 @@
     });
     syncLayout();
   }
-  function calculateSim(a, b) { return similarity(profile(a), profile(b)); }
+  function calculateSim(a, b, pa, pb) {
+    a = a.trim(); b = b.trim();
+    var shortStr = a.length <= b.length ? a : b, longStr = a.length <= b.length ? b : a;
+    if (shortStr.length >= 2 && longStr.includes(shortStr)) return 0.9;
+    var cleanA = a.replace(/[\p{P}\s]/gu, ''), cleanB = b.replace(/[\p{P}\s]/gu, '');
+    shortStr = cleanA.length <= cleanB.length ? cleanA : cleanB;
+    longStr = cleanA.length <= cleanB.length ? cleanB : cleanA;
+    if (Array.from(shortStr).length >= 2 && longStr.includes(shortStr)) return 0.9;
+    pa = pa || profile(a); pb = pb || profile(b);
+    var dice = similarity(pa, pb), overlap = pa.length && pb.length ? dice * (pa.length + pb.length) / (2 * Math.min(pa.length, pb.length)) : 0;
+    if (overlap >= 0.6) return Math.max(0.5, dice);
+    // 任意三个连续汉字相同即命中，等价覆盖更长公共前后缀/子串，线性扫描。
+    var triples = new Set(), chars = Array.from(a), run = 0;
+    chars.forEach(function (ch, i) {
+      run = /\p{Script=Han}/u.test(ch) ? run + 1 : 0;
+      if (run >= 3) triples.add(chars.slice(i - 2, i + 1).join(''));
+    });
+    chars = Array.from(b); run = 0;
+    for (var i = 0; i < chars.length; i++) {
+      run = /\p{Script=Han}/u.test(chars[i]) ? run + 1 : 0;
+      if (run >= 3 && triples.has(chars.slice(i - 2, i + 1).join(''))) return Math.max(0.5, dice);
+    }
+    return dice;
+  }
   function matchPasted(preset, pasted) {
     var modules = preset.modules.filter(function (m) { return m.contentType !== 'wordlist'; });
     if (!modules.length) return [];
