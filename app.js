@@ -1058,6 +1058,7 @@
       var session = getCurrentSession();
       if (!session) return false;
       session.presetId = presetId && getPresetById(presetId) ? presetId : null;
+      var openingApplied = applyPresetOpeningToSession(session, getPresetById(session.presetId));
       session.updatedAt = Date.now();
       persistSessions();
       touchLastModified();
@@ -1069,6 +1070,7 @@
         renderTopPresetModules();
         if (els.presetModal && els.presetModal.classList.contains('show')) renderPresetModules();
         refreshMemoryContext();
+        if (openingApplied) renderMessages();
       } catch (err) {
         console.warn('[MyChat] 预设界面刷新失败：', err);
       }
@@ -4593,6 +4595,29 @@
     session.messages = [{ role: 'assistant', content: content }];
     session.firstMessage = content;
     session.updatedAt = Date.now();
+    return true;
+  }
+
+  // 预设开场白只接管真正空白或唯一的已知初始问候，禁止清除其他助手记录。
+  function applyPresetOpeningToSession(session, preset) {
+    var content = preset && typeof preset.firstMessage === 'string' ? preset.firstMessage.trim() : '';
+    if (!session || !content || isChannelGenerating(session.id, getActiveSubChatId(session))) return false;
+    var sub = getActiveSubChat(session);
+    var messages = sub ? sub.messages : session.messages;
+    if (!Array.isArray(messages)) return false;
+    var first = messages[0];
+    var initialOnly = messages.length === 1 && first && first.role === 'assistant' &&
+      ((first.meta && first.meta.isGreeting === true) ||
+        (typeof session.firstMessage === 'string' && session.firstMessage.trim() && first.content === session.firstMessage));
+    if (messages.length !== 0 && !initialOnly) return false;
+    var greeting = { role: 'assistant', content: content, reasoning: '', meta: { isGreeting: true, greetingIndex: 0 } };
+    messages.splice(0, messages.length, greeting);
+    session.messages = messages;
+    if (sub) { sub.messages = messages; sub.updatedAt = Date.now(); }
+    session.firstMessage = content;
+    session.updatedAt = Date.now();
+    // 未打开时也更新真实输入框，但不得覆盖正在编辑的其他会话草稿。
+    if (els.scFirstMessageInput && (!charModalSessionId || charModalSessionId === session.id)) els.scFirstMessageInput.value = content;
     return true;
   }
 
@@ -8452,6 +8477,7 @@
         // 预设专属正则：历史数据无该字段时补空数组（幂等）
         regexRules: Array.isArray(item.regexRules) ? normalizeRegexRules(item.regexRules) : []
       };
+      if (typeof item.firstMessage === 'string') preset.firstMessage = item.firstMessage;
       if (Array.isArray(item.snapshots)) preset.snapshots = safeClone(item.snapshots);
       if (Array.isArray(item.quickModes)) preset.quickModes = safeClone(item.quickModes);
       list.push(preset);
@@ -8918,6 +8944,7 @@
 
     var presetId = value && getPresetById(value) ? value : null;
     session.presetId = presetId;
+    var openingApplied = applyPresetOpeningToSession(session, getPresetById(presetId));
     session.updatedAt = Date.now();
     persistSessions();
     touchLastModified();
@@ -8927,6 +8954,7 @@
     renderPresetModules();
     refreshPresetButtonState();
     refreshMemoryContext();
+    if (openingApplied) renderMessages();
 
     // 顶部 #0 下拉面板同步（若正展开则立即重绘）
     if (topPresetOpen) {
@@ -14733,7 +14761,12 @@
     // 侧边栏：新建对话（主会话）
     if (els.newChatBtn) {
       els.newChatBtn.addEventListener('click', function () {
+        var sourcePreset = getCurrentSessionPreset();
         createSession(true);
+        // 仅用户新建路径继承带开场白的预设，启动补建与角色卡导入保持原行为。
+        if (sourcePreset && typeof sourcePreset.firstMessage === 'string' && sourcePreset.firstMessage.trim()) {
+          window.MyChat.setCurrentPreset(sourcePreset.id);
+        }
         closeSidebar();
         if (els.input) els.input.focus();
       });

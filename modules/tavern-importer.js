@@ -691,7 +691,7 @@
   // 只剥离最外层；同名嵌套计数，注释与 CDATA 内的标签不参与扫描。
   function parseTopLevelXmlBlocks(rawText) {
     var text = String(rawText || '').replace(/^\uFEFF/, '');
-    var tokens = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\/?([a-zA-Z0-9_-]+)\s*>/g;
+    var tokens = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\/?([a-zA-Z0-9_\u3400-\u9fff-]+)\s*>/g;
     var blocks = [], stack = [], start = 0, bodyStart = 0, consumed = 0, match;
     function loose(end) {
       var content = text.slice(consumed, end);
@@ -759,16 +759,51 @@
       function (_, prefix, key) { return prefix + names[key.toLowerCase()] + '：'; });
   }
 
+  var openingTags = ['initialization', 'init', 'greeting', 'greetings', 'first_mes', 'first_message', 'opening', 'welcome', '开场白', '初始化'];
+
+  function normalizeOpeningGreeting(rawInitText, roleTitle) {
+    // 元指令整句删除；真正的推演正文也不作为开场台词展示。
+    var text = String(rawInitText || '').replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking\s*>/gi, '')
+      .replace(/[^。！？\n]*(?:隐藏|不要显示|不(?:要)?输出|不展示)[^。！？\n]*(?:thinking|思考过程|思考标签)[^。！？\n]*[。！？]?/gi, '')
+      .replace(/[^。！？\n]*(?:thinking)[^。！？\n]*(?:隐藏|不显示|不输出)[^。！？\n]*[。！？]?/gi, '').trim();
+    var director = /(?:在)?(?:第一次与用户打招呼时|初次对话时|首次对话时)|请用[^。！？\n]*口吻向用户问好|简要说明你的工作原则|随后邀请用户|询问用户|请向用户问好/.test(text);
+    if (!director) return text;
+    var principle = text.match(/(?:简要说明你的工作原则|工作原则)\s*(?:是|为)?\s*(?:——|—|[:：])?\s*(?:[“"]([^”"]+)[”"]|\*\*([\s\S]+?)\*\*|([^。！？\n]+))/);
+    var quoted = text.match(/[“"]([^”"]+)[”"]|\*\*([\s\S]+?)\*\*/);
+    var core = principle ? (principle[1] || principle[2] || principle[3]) : quoted ? (quoted[1] || quoted[2]) : '';
+    core = String(core || '').replace(/[，,；;。]+$/, '').trim();
+    var invitation = text.match(/(?:随后|然后|最后)?\s*(?:邀请用户|询问用户)\s*([\s\S]*)$/);
+    var lead = '';
+    if (invitation) {
+      lead = invitation[1].replace(/用户/g, '你').replace(/^[：:，,\s]+/, '').trim();
+      lead = lead.replace(/^(?:请|可以|你可以)\s*/, '');
+      if (/^(?:直接)?(?:发来|提供|发送|告诉|描述|提出|分享)/.test(lead)) lead = '现在，你可以' + lead;
+      else if (lead) lead = '现在，' + lead;
+    }
+    if (!core && !lead) {
+      lead = text.replace(/(?:在)?(?:第一次与用户打招呼时|初次对话时|首次对话时)[，,：:\s]*/g, '')
+        .replace(/请用[^。！？\n]*?口吻向用户问好[，,。\s]*/g, '').replace(/请向用户问好[，,。\s]*/g, '')
+        .replace(/用户/g, '你').trim();
+    }
+    return ['你好！我是你的' + (String(roleTitle || '').trim() || '专属助手') + '。', core ? '我的核心工作原则是：' + core + '。' : '', lead].filter(Boolean).join('\n\n');
+  }
+
   async function importXmlPreset(rawText, name) {
     var blocks = parseTopLevelXmlBlocks(rawText), cache = Object.create(null);
     var role = blocks.find(function (block) { return block.tag.toLowerCase() === 'role'; });
-    var presetName = String(name || '').trim() || (role && role.content.trim().split(/\r?\n/, 1)[0].trim()) || 'XML导入预设';
+    var roleTitle = role ? role.content.trim().split(/\r?\n/, 1)[0].trim() : '';
+    var presetName = String(name || '').trim() || roleTitle || 'XML导入预设';
+    var rawInitText = blocks.filter(function (block) { return openingTags.indexOf(block.tag.toLowerCase()) !== -1; })
+      .map(function (block) { return block.content; }).join('\n\n');
+    blocks = blocks.filter(function (block) { return openingTags.indexOf(block.tag.toLowerCase()) === -1; });
+    var firstMessage = normalizeOpeningGreeting(rawInitText, roleTitle);
     var modules = await Promise.all(blocks.map(async function (block, index) {
       return { id: uid('mod'), name: await chineseModuleName(block, index, cache), content: translateMetadata(block.content), enabled: true, roleType: 'system', keepPrefillInReply: false };
     }));
     // 翻译期间用户可能改库；在提交前重新取副本，不覆盖其改动。
     if (!bridge.getCurrentSession || !bridge.getCurrentSession()) throw new Error('请先新建对话');
     var preset = { id: uid('preset'), name: presetName, modules: modules, regexRules: [] };
+    if (firstMessage) preset.firstMessage = firstMessage;
     var list = bridge.getPromptPresets(); list.push(preset);
     if (!bridge.applyPresetWorkbenchChanges(list)) throw new Error('预设保存失败');
     if (!bridge.setCurrentPreset(preset.id)) throw new Error('预设激活失败');
@@ -926,6 +961,7 @@
     importCharacterCard: importCharacterCard,
     importPreset: importTavernPreset,
     parseTopLevelXmlBlocks: parseTopLevelXmlBlocks,
+    normalizeOpeningGreeting: normalizeOpeningGreeting,
     importXmlPreset: importXmlPreset,
     // 单独解析 PNG 角色卡（返回角色卡对象，不写入任何数据）
     parsePngCard: async function (file) {
