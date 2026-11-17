@@ -3162,7 +3162,7 @@
   // 缩放阅读锚点仅存内存；尺寸变化前的快照不能被重排产生的滚动覆盖。
   var resizeAnchor = { el: null, offsetTopFromViewport: 0, atBottom: true };
   var resizeAnchorTimer = null;
-  var resizeChatWidth = 0, resizeChatHeight = 0;
+  var resizeChatWidth = 0, resizeChatHeight = 0, resizeAnchorRaf = 0, messageResizeRaf = 0;
   window.isResizingWindow = false;
 
   function captureResizeAnchor() {
@@ -3202,16 +3202,22 @@
   function handleChatResize() {
     var chatBox = els.chatArea;
     if (!chatBox) return;
-    resizeChatWidth = chatBox.clientWidth;
-    resizeChatHeight = chatBox.clientHeight;
+    var widthChanged = Math.abs(chatBox.clientWidth - resizeChatWidth) > 2;
+    var heightChanged = Math.abs(chatBox.clientHeight - resizeChatHeight) > 2;
+    if (!widthChanged && !heightChanged) return;
     window.isResizingWindow = true;
     clearTimeout(resizeAnchorTimer);
-    restoreResizeAnchor();
-    resizeAnchorTimer = setTimeout(function () {
+    if (resizeAnchorRaf) cancelAnimationFrame(resizeAnchorRaf);
+    resizeAnchorRaf = requestAnimationFrame(function () {
+      resizeAnchorRaf = 0;
+      resizeChatWidth = chatBox.clientWidth;
+      resizeChatHeight = chatBox.clientHeight;
       restoreResizeAnchor();
-      window.isResizingWindow = false;
-      captureResizeAnchor();
-    }, 150);
+      resizeAnchorTimer = setTimeout(function () {
+        window.isResizingWindow = false;
+        captureResizeAnchor();
+      }, 150);
+    });
   }
 
   function initResizeScrollAnchor() {
@@ -6014,8 +6020,11 @@
     // 图片、字体与沙盒异步撑高后，仍按用户当前的跟随意愿校准真实底部。
     if (!els.chatArea._messageResizeObserver && window.ResizeObserver) {
       els.chatArea._messageResizeObserver = new ResizeObserver(function () {
-        if (window.isResizingWindow) restoreResizeAnchor();
-        else requestAnimationFrame(scrollToBottom);
+        if (messageResizeRaf) cancelAnimationFrame(messageResizeRaf);
+        messageResizeRaf = requestAnimationFrame(function () {
+          messageResizeRaf = 0;
+          if (!window.isResizingWindow) scrollToBottom();
+        });
       });
     }
     var noScroll = opts.noScroll === true;
@@ -8788,8 +8797,20 @@
    * 原生 HTML5 拖拽 + 移动端触摸拖拽排序（无「上移 / 下移」按钮）
    */
   function bindModuleDragSort(row, handle) {
+    var dragArmed = false;
+    row.draggable = false;
+    row.addEventListener('mousedown', function (e) {
+      dragArmed = e.button === 0 && !!e.target.closest('.drag-handle, .module-name') &&
+        !e.target.closest('textarea, input, [contenteditable="true"], .module-content, .module-preview, .wb-editor');
+      row.draggable = dragArmed;
+    });
+    function disarm() { dragArmed = false; row.draggable = false; }
+    row.addEventListener('mouseup', disarm);
+    row.addEventListener('mouseleave', disarm);
     row.addEventListener('dragstart', function (e) {
-      if (!e.dataTransfer) return;
+      if (!dragArmed || !e.dataTransfer || String(window.getSelection()).length > 0) {
+        e.preventDefault(); e.stopPropagation(); return;
+      }
       row.classList.add('dragging');
       e.dataTransfer.effectAllowed = 'move';
       try {
@@ -9598,8 +9619,19 @@
    * 顶部下拉内模块行的拖拽排序（HTML5 拖拽 + 触摸拖动）
    */
   function bindTopModuleDragSort(row, handle, preset) {
+    var dragArmed = false;
+    row.draggable = false;
+    row.addEventListener('mousedown', function (e) {
+      dragArmed = e.button === 0 && !!e.target.closest('.drag-handle, .module-name') &&
+        !e.target.closest('textarea, input, [contenteditable="true"], .module-content, .module-preview, .wb-editor');
+      row.draggable = dragArmed;
+    });
+    function disarm() { dragArmed = false; row.draggable = false; }
+    row.addEventListener('mouseup', disarm); row.addEventListener('mouseleave', disarm);
     row.addEventListener('dragstart', function (e) {
-      if (!e.dataTransfer) return;
+      if (!dragArmed || !e.dataTransfer || String(window.getSelection()).length > 0) {
+        e.preventDefault(); e.stopPropagation(); return;
+      }
       row.classList.add('dragging');
       e.dataTransfer.effectAllowed = 'move';
       try {

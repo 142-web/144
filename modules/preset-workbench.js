@@ -9,6 +9,50 @@
   var undoStack = [], redoStack = [], expanded = new Set();
   var selectedLeftIds = [], selectedRightIds = [], workbenchMode = 'iterate';
   var columns, iterationPane, pasteBox, fusionBar, fusionLeft, fusionRight, compareButton, modeButtons = [];
+  var activeSnippetSelection = null, snippetBar, snippetLabel;
+  function clearSnippet() {
+    activeSnippetSelection = null;
+    if (snippetBar) snippetBar.hidden = true;
+  }
+  function captureSnippet(event, presetId, moduleId, editor, originalText) {
+    if (workbenchMode !== 'iterate') return;
+    var start, end, text;
+    if (editor.matches('textarea, input')) {
+      start = editor.selectionStart; end = editor.selectionEnd; text = editor.value;
+    } else {
+      var selection = window.getSelection();
+      if (!selection || !selection.rangeCount) return;
+      var range = selection.getRangeAt(0);
+      if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) return;
+      var prefix = range.cloneRange(); prefix.selectNodeContents(editor); prefix.setEnd(range.startContainer, range.startOffset);
+      start = prefix.toString().length; end = start + range.toString().length; text = editor.textContent;
+    }
+    var selectedText = text.slice(start, end);
+    if (!selectedText.trim()) return;
+    // textarea 会规范化 CRLF；偏移必须映射回存储原文，未保存草稿不能锁定。
+    var normalized = originalText.replace(/\r\n?/g, '\n');
+    if (text !== normalized) return notify('请先保存正文修改');
+    function originalOffset(offset) {
+      var i = 0, n = 0;
+      while (i < originalText.length && n < offset) {
+        if (originalText[i] === '\r' && originalText[i + 1] === '\n') i++;
+        i++; n++;
+      }
+      return i;
+    }
+    start = originalOffset(start); end = originalOffset(end);
+    selectedText = originalText.slice(start, end);
+    activeSnippetSelection = { presetId: presetId, moduleId: moduleId, startOffset: start, endOffset: end, selectedText: selectedText };
+    invalidate();
+    snippetLabel.textContent = '🎯 已锁定局部片段（' + Array.from(selectedText).length + ' 字）— 粘贴新内容将仅对比并替换该选中段落';
+    snippetBar.hidden = false;
+  }
+  // 偏移优先；全文变化后只接受唯一原片段，歧义时拒绝覆盖。
+  function locateSnippet(fullText, snippet) {
+    if (fullText.slice(snippet.startOffset, snippet.endOffset) === snippet.selectedText) return snippet.startOffset;
+    var at = fullText.indexOf(snippet.selectedText);
+    return at >= 0 && fullText.indexOf(snippet.selectedText, at + 1) < 0 ? at : -1;
+  }
   function selectedIds(side) { return side ? selectedRightIds : selectedLeftIds; }
   function clearSelection(side) { selectedIds(side).length = 0; }
   try { segmenter = new Intl.Segmenter('zh-CN', { granularity: 'word' }); } catch (_) {}
@@ -63,7 +107,7 @@
       if (!host.applyPresetWorkbenchChanges(previous)) throw new Error('恢复失败');
     } catch (_) { notify('恢复失败，请重试'); return; }
     source.pop(); target.push(current); if (target.length > 30) target.shift();
-    invalidate(); render(); notify(redo ? '已恢复下一步' : '已返回上一步');
+    clearSnippet(); invalidate(); render(); notify(redo ? '已恢复下一步' : '已返回上一步');
   }
   function undo() { restoreHistory(false); }
   function syncSelection(side) {
@@ -80,7 +124,7 @@
     compareButton.hidden = !selectedLeftIds.length || !selectedRightIds.length;
   }
   function setMode(mode) {
-    workbenchMode = mode; invalidate(); diffRows.replaceChildren();
+    workbenchMode = mode; clearSnippet(); invalidate(); diffRows.replaceChildren();
     panels.forEach(function (p) { p.snapshots.hidden = true; p.snapshotButton.setAttribute('aria-expanded', 'false'); });
     render();
   }
@@ -232,7 +276,13 @@
     body.appendChild(mode);
     if (m.contentType !== 'wordlist') {
       var editor = el('textarea', 'pw-content'); editor.value = m.content; editor.setAttribute('aria-label', '模块正文');
-      editor.addEventListener('input', function () { refreshTokenStats(p.id, m.id, editor.value.trim()); });
+      editor.addEventListener('input', function () {
+        if (activeSnippetSelection && activeSnippetSelection.moduleId === m.id) { clearSnippet(); invalidate(); }
+        refreshTokenStats(p.id, m.id, editor.value.trim());
+      });
+      if (side === 0) ['mouseup', 'keyup'].forEach(function (type) {
+        editor.addEventListener(type, function (event) { captureSnippet(event, p.id, m.id, editor, m.content || ''); });
+      });
       editor.addEventListener('dragstart', function (e) { e.stopPropagation(); e.preventDefault(); });
       var bar = el('div', 'pw-actions');
       bar.appendChild(iconButton('check', '保存修改', function () {
@@ -452,9 +502,19 @@
       if (p) p.modules.forEach(function (m) {
         var option = el('option', '', '在「' + (m.name || '未命名模块') + '」之后'); option.value = m.id; panel.after.appendChild(option);
         var card = el('article', 'pw-module' + (ids.indexOf(m.id) >= 0 ? ' selected' : ''));
-        card.draggable = true; card.dataset.moduleId = m.id;
+        card.draggable = false; card.dataset.moduleId = m.id;
+        var dragArmed = false;
+        card.addEventListener('mousedown', function (e) {
+          dragArmed = e.button === 0 && !!e.target.closest('.pw-grip, .pw-pick strong') &&
+            !e.target.closest('textarea, input, select, [contenteditable="true"], .module-content, .wb-editor, .pw-module-body');
+          card.draggable = dragArmed;
+        });
+        function disarm() { dragArmed = false; card.draggable = false; }
+        card.addEventListener('mouseup', disarm); card.addEventListener('mouseleave', disarm);
         card.addEventListener('dragstart', function (e) {
-          if (e.target.closest('textarea, input, select, .pw-module-body')) { e.preventDefault(); return; }
+          if (!dragArmed || !e.dataTransfer || String(window.getSelection()).length > 0 || e.target.closest('textarea, input, select, [contenteditable="true"], .pw-module-body')) {
+            e.preventDefault(); e.stopPropagation(); return;
+          }
           drag = { presetId: p.id, moduleId: m.id, original: JSON.stringify(m), copy: e.ctrlKey || e.altKey };
           e.dataTransfer.effectAllowed = 'copyMove'; e.dataTransfer.setData('text/plain', m.id);
           card.classList.add('dragging');
@@ -567,7 +627,13 @@
       var pasted = panels[0].external.value;
       if (!pasted.trim()) return notify('请粘贴修改稿');
       var chosen = leftPreset && selectedLeftIds.map(function (id) { return leftPreset.modules.find(function (m) { return m.id === id; }); }).filter(Boolean);
-      if (chosen && chosen.length === 1) {
+      if (activeSnippetSelection) {
+        var snippet = clone(activeSnippetSelection);
+        var owner = leftPreset && leftPreset.id === snippet.presetId && leftPreset.modules.find(function (m) { return m.id === snippet.moduleId; });
+        if (!owner || owner.contentType === 'wordlist' || locateSnippet(owner.content || '', snippet) < 0) return notify('片段已变化，请重新划选');
+        tasks = [{ presetId: leftPreset.id, moduleId: owner.id, original: JSON.stringify(owner), snippet: snippet,
+          left: snippet.selectedText, right: pasted, name: owner.name || '未命名模块' }];
+      } else if (chosen && chosen.length === 1) {
         tasks = chosen.filter(function (m) { return m.contentType !== 'wordlist'; }).map(function (m) {
           return { presetId: leftPreset.id, moduleId: m.id, original: JSON.stringify(m), left: m.content || '', right: pasted, name: m.name || '未命名模块' };
         });
@@ -588,7 +654,7 @@
   }
   function renderDiffTask(task) {
     var result = diffTexts(task.left, task.right), card = el('article', 'pw-diff-card');
-    var head = el('header', 'pw-bar'), title = el('strong', '', task.name);
+    var head = el('header', 'pw-bar'), title = el('strong', '', task.snippet ? '[局部片段对比] 所属模块：' + task.name : task.name);
     var save = iconButton('check', '保存此模块', function () { saveEdited(task); });
     save.classList.add('pw-save-diff'); head.append(title, save);
     var editor = createDiffEditor(); task.editor = editor; task.save = save;
@@ -659,9 +725,20 @@
     if (!review || review.indexOf(task) < 0 || task.save.disabled) return;
     var list = presets(), p = list.find(function (item) { return item.id === task.presetId; });
     var m = p && p.modules.find(function (item) { return item.id === task.moduleId; });
-    if (!m || JSON.stringify(m) !== task.original) { task.save.disabled = true; return notify('目标已变化，请重新对比'); }
-    m.content = extractMergedText(task.editor);
-    if (commit(list, true)) { task.original = JSON.stringify(m); notify('已保存到目标模块'); }
+    if (!m || m.contentType === 'wordlist' || (!task.snippet && JSON.stringify(m) !== task.original)) {
+      task.save.disabled = true; return notify('目标已变化，请重新对比');
+    }
+    var resolved = extractMergedText(task.editor);
+    if (task.snippet) {
+      var fullText = m.content || '', at = locateSnippet(fullText, task.snippet);
+      if (at < 0) { task.save.disabled = true; return notify('片段已变化，请重新划选'); }
+      m.content = fullText.slice(0, at) + resolved + fullText.slice(at + task.snippet.selectedText.length);
+    } else m.content = resolved;
+    if (commit(list, true)) {
+      task.original = JSON.stringify(m);
+      if (task.snippet) { task.save.disabled = true; clearSnippet(); }
+      notify('已保存到目标模块');
+    }
   }
   function build() {
     dialog = el('dialog', 'pw-dialog'); dialog.id = 'preset-workbench-modal'; dialog.setAttribute('aria-labelledby', 'pw-title');
@@ -698,7 +775,7 @@
       var select = el('select'); select.setAttribute('aria-label', side ? '右栏预设' : '左栏预设'); label.appendChild(select); bar.appendChild(label);
       var after = el('select'); after.setAttribute('aria-label', side ? '右栏插入位置' : '左栏插入位置');
       after.addEventListener('change', function () { s.afterId = after.value; });
-      select.addEventListener('change', function () { s.presetId = select.value; s.moduleId = ''; s.afterId = ''; clearSelection(side); panels[side].quickForm.hidden = true; invalidate(); render(); });
+      select.addEventListener('change', function () { if (side === 0) clearSnippet(); s.presetId = select.value; s.moduleId = ''; s.afterId = ''; clearSelection(side); panels[side].quickForm.hidden = true; invalidate(); render(); });
       var snapshotButton = iconButton('snapshot', '版本快照', function () {
         var panel = panels[side], opening = panel.snapshots.hidden;
         panels.forEach(function (other) { other.snapshots.hidden = true; other.snapshotButton.setAttribute('aria-expanded', 'false'); });
@@ -768,7 +845,10 @@
     var area = el('textarea', 'pw-external'); area.placeholder = '粘贴修改稿'; area.setAttribute('aria-label', '修改稿输入');
     area.title = '已选模块优先，未选时自动匹配'; area.addEventListener('input', invalidate);
     panels[0].external = area;
-    pasteBox.append(pasteTitle, area); iterationPane.appendChild(pasteBox);
+    snippetBar = el('div', 'pw-snippet-lock'); snippetBar.hidden = true; snippetBar.setAttribute('role', 'status');
+    snippetLabel = el('span');
+    snippetBar.append(snippetLabel, iconButton('close', '取消局部锁定（恢复全模块对比）', function () { clearSnippet(); invalidate(); }));
+    pasteBox.append(pasteTitle, snippetBar, area); iterationPane.appendChild(pasteBox);
     var toolbar = el('div', 'pw-bar pw-review-bar'); toolbar.appendChild(el('strong', '', '修改比对'));
     var collapseLabel = el('label', 'pw-check'); collapseInput = el('input'); collapseInput.type = 'checkbox';
     collapseInput.addEventListener('change', function () { diffRows.querySelectorAll('.pw-diff-rows').forEach(function (editor) { editor.classList.toggle('pw-collapse', collapseInput.checked); }); });
@@ -784,7 +864,7 @@
     dialog.addEventListener('cancel', function (e) { if (panels.some(function (p) { return !p.snapshots.hidden; })) { e.preventDefault(); hideSnapshots(); } });
     window.addEventListener('resize', function () { panels.forEach(function (_, side) { positionSnapshots(side); }); });
     dialog.addEventListener('scroll', function () { panels.forEach(function (_, side) { positionSnapshots(side); }); });
-    dialog.addEventListener('close', function () { hideSnapshots(); clearDrag(); invalidate(); if (opener && opener.isConnected) opener.focus(); });
+    dialog.addEventListener('close', function () { clearSnippet(); hideSnapshots(); clearDrag(); invalidate(); if (opener && opener.isConnected) opener.focus(); });
     dialog.addEventListener('click', function (e) { if (e.target === dialog) { var r = dialog.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) dialog.close(); } });
     document.body.appendChild(dialog);
   }
@@ -811,7 +891,7 @@
   }
   function open() {
     if (!dialog) build();
-    opener = document.activeElement; invalidate(); render();
+    opener = document.activeElement; clearSnippet(); invalidate(); render();
     panels.forEach(function (p, side) { clearSelection(side); p.quickForm.hidden = true; });
     workbenchMode = 'iterate'; panels[0].external.value = '';
     diffBox.hidden = false; diffRows.replaceChildren(); render(); notify('就绪');
