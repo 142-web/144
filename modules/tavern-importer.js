@@ -706,7 +706,7 @@
       loose(match.index);
       var bodyStart = starts.lastIndex;
       if (text.charAt(bodyStart) === '\n') bodyStart++;
-      blocks.push({ tag: match[1], content: text.slice(bodyStart, end.index) });
+      blocks.push({ tag: match[1], xmlTag: match[1].toLowerCase(), content: text.slice(bodyStart, end.index) });
       consumed = closing.lastIndex;
       starts.lastIndex = consumed;
     }
@@ -718,7 +718,7 @@
     var compact = /<([a-zA-Z0-9_\u3400-\u9fff-]+)>([\s\S]*?)<\/\1>/g;
     while ((match = compact.exec(text))) {
       loose(match.index);
-      blocks.push({ tag: match[1], content: match[2] });
+      blocks.push({ tag: match[1], xmlTag: match[1].toLowerCase(), content: match[2] });
       consumed = compact.lastIndex;
     }
     loose(text.length);
@@ -806,7 +806,9 @@
     blocks = blocks.filter(function (block) { return openingTags.indexOf(block.tag.toLowerCase()) === -1; });
     var firstMessage = normalizeOpeningGreeting(rawInitText, roleTitle);
     var modules = await Promise.all(blocks.map(async function (block, index) {
-      return { id: uid('mod'), name: await chineseModuleName(block, index, cache), content: translateMetadata(block.content), enabled: true, roleType: 'system', keepPrefillInReply: false };
+      var module = { id: uid('mod'), name: await chineseModuleName(block, index, cache), content: translateMetadata(block.content), enabled: true, roleType: 'system', keepPrefillInReply: false };
+      if (block.xmlTag) module.xmlTag = block.xmlTag;
+      return module;
     }));
     // 翻译期间用户可能改库；在提交前重新取副本，不覆盖其改动。
     if (!bridge.getCurrentSession || !bridge.getCurrentSession()) throw new Error('请先新建对话');

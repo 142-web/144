@@ -595,7 +595,49 @@
     }
     return dice;
   }
+  var xmlModuleNames = { role: '角色设定', profile: '角色档案', background: '背景设定', skills: '核心技能', rules: '核心规则', workflow: '工作流', output_format: '输出格式' };
+  function splitInputByModules(text) {
+    // 以完整父块为最小单位；同名嵌套计数，内部其他标签（含孤立 thinking）不拆分。
+    var blocks = [], starts = /<([a-zA-Z0-9_\u3400-\u9fff-]+)>/g, match;
+    while ((match = starts.exec(text))) {
+      var tag = match[1], pairs = new RegExp('<(/?)' + tag + '>', 'gi'), depth = 1, end;
+      pairs.lastIndex = starts.lastIndex;
+      while ((end = pairs.exec(text))) {
+        depth += end[1] ? -1 : 1;
+        if (!depth) break;
+      }
+      if (!end || depth) continue;
+      blocks.push({ tagName: tag.toLowerCase(), innerContent: text.slice(starts.lastIndex, end.index) });
+      starts.lastIndex = pairs.lastIndex;
+    }
+    return blocks;
+  }
+  function xmlBody(text, tag) {
+    var shell = new RegExp('^\\s*<' + tag + '>([\\s\\S]*)</' + tag + '>\\s*$', 'i').exec(text);
+    return shell ? shell[1].trim() : text.trim();
+  }
+  function xmlShell(text, tag) { return '<' + tag + '>\n' + xmlBody(text, tag) + '\n</' + tag + '>'; }
+  function autoMatchModules(preset, blocks) {
+    var groups = new Map();
+    blocks.forEach(function (block) {
+      var module = preset.modules.find(function (m) { return m.contentType !== 'wordlist' && String(m.xmlTag || '').toLowerCase() === block.tagName; }) ||
+        preset.modules.find(function (m) { return m.contentType !== 'wordlist' && !m.xmlTag && xmlModuleNames[block.tagName] === m.name; });
+      // 未匹配块（特别是已剥离的开场白）直接忽略，绝不降级到字面相似度。
+      if (!module) return;
+      var entry = groups.get(module.id);
+      if (entry) entry.right += '\n\n' + block.innerContent.trim();
+      else groups.set(module.id, { module: module, tag: block.tagName, right: block.innerContent.trim() });
+    });
+    return preset.modules.filter(function (m) { return groups.has(m.id); }).map(function (m) {
+      var entry = groups.get(m.id);
+      return { presetId: preset.id, moduleId: m.id, original: JSON.stringify(m), xmlTag: entry.tag,
+        bareXml: !new RegExp('^\\s*<' + entry.tag + '>', 'i').test(m.content || ''),
+        left: xmlShell(m.content || '', entry.tag), right: xmlShell(entry.right, entry.tag), name: m.name || '未命名模块' };
+    });
+  }
   function matchPasted(preset, pasted) {
+    var xmlBlocks = splitInputByModules(pasted);
+    if (xmlBlocks.length) return autoMatchModules(preset, xmlBlocks);
     var modules = preset.modules.filter(function (m) { return m.contentType !== 'wordlist'; });
     if (!modules.length) return [];
     var candidates = modules.map(function (m) {
@@ -666,6 +708,8 @@
         if (!owner || owner.contentType === 'wordlist' || locateSnippet(owner.content || '', snippet) < 0) return notify('片段已变化，请重新划选');
         tasks = [{ presetId: leftPreset.id, moduleId: owner.id, original: JSON.stringify(owner), snippet: snippet,
           left: snippet.selectedText, right: pasted, name: owner.name || '未命名模块' }];
+      } else if (splitInputByModules(pasted).length) {
+        tasks = leftPreset ? matchPasted(chosen && chosen.length ? { id: leftPreset.id, modules: chosen } : leftPreset, pasted) : [];
       } else if (chosen && chosen.length === 1) {
         tasks = chosen.filter(function (m) { return m.contentType !== 'wordlist'; }).map(function (m) {
           return { presetId: leftPreset.id, moduleId: m.id, original: JSON.stringify(m), left: m.content || '', right: pasted, name: m.name || '未命名模块' };
@@ -689,7 +733,9 @@
     var result = diffTexts(task.left, task.right), card = el('article', 'pw-diff-card');
     var head = el('header', 'pw-bar'), title = el('strong', '', task.snippet ? '[局部片段对比] 所属模块：' + task.name : task.name);
     var save = iconButton('check', '保存此模块', function () { saveEdited(task); });
-    save.classList.add('pw-save-diff'); head.append(title, save);
+    var copy = iconButton('copy', '复制比对结果（含红绿标记）', function () { copyDiffResult(task.editor); });
+    copy.classList.add('pw-copy-diff');
+    save.classList.add('pw-save-diff'); head.append(title, copy, save);
     var editor = createDiffEditor(); task.editor = editor; task.save = save;
     card.append(head, editor); diffRows.appendChild(card);
     function appendPart(row, type, text) {
@@ -762,6 +808,8 @@
       task.save.disabled = true; return notify('目标已变化，请重新对比');
     }
     var resolved = extractMergedText(task.editor);
+    if (task.xmlTag && task.bareXml) resolved = xmlBody(resolved, task.xmlTag);
+    if (task.xmlTag && !m.xmlTag) m.xmlTag = task.xmlTag;
     if (task.snippet) {
       var fullText = m.content || '', at = locateSnippet(fullText, task.snippet);
       if (at < 0) { task.save.disabled = true; return notify('片段已变化，请重新划选'); }
@@ -901,11 +949,66 @@
     dialog.addEventListener('click', function (e) { if (e.target === dialog) { var r = dialog.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) dialog.close(); } });
     document.body.appendChild(dialog);
   }
+  // 复制导出与保存提取严格分离：这里保留全部红绿块并附可读标记。
+  function serializeDiffCopy(root) {
+    function read(node) {
+      if (node.nodeType === 3) return node.nodeValue;
+      if (node.nodeType !== 1 && node.nodeType !== 11) return '';
+      if (node.nodeType === 1 && /^(SCRIPT|STYLE)$/.test(node.tagName)) return '';
+      if (node.nodeType === 1 && node.tagName === 'BR') return '\n';
+      var text = Array.from(node.childNodes).map(read).join('');
+      if (node.nodeType === 1) {
+        if (node.classList.contains('diff-del')) return '【-删除：' + text + '-】';
+        if (node.classList.contains('diff-add')) return '【+新增：' + text + '+】';
+        if (/^(DIV|P|LI|PRE|BLOCKQUOTE|H[1-6])$/.test(node.tagName) && node.nextSibling && !text.endsWith('\n')) text += '\n';
+      }
+      return text;
+    }
+    return read(root);
+  }
+  function selectedDiffCopy(editor) {
+    var selection = window.getSelection(), output = [];
+    if (!selection || selection.isCollapsed) return null;
+    for (var i = 0; i < selection.rangeCount; i++) {
+      var range = selection.getRangeAt(i);
+      if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) return null;
+      var fragment = range.cloneContents(), ancestor = range.commonAncestorContainer;
+      if (ancestor.nodeType === 3) ancestor = ancestor.parentNode;
+      // cloneContents 不含公共祖先：补回选区所在的红/绿外壳，兼容只选半个删除词。
+      while (ancestor && ancestor !== editor) {
+        var wrapper = ancestor.cloneNode(false); wrapper.appendChild(fragment); fragment = wrapper; ancestor = ancestor.parentNode;
+      }
+      output.push(serializeDiffCopy(fragment));
+    }
+    return output.join('\n');
+  }
+  async function copyDiffResult(editor) {
+    var text = serializeDiffCopy(editor), selection = window.getSelection(), ranges = [];
+    if (selection) for (var i = 0; i < selection.rangeCount; i++) ranges.push(selection.getRangeAt(i).cloneRange());
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        try { await navigator.clipboard.writeText(text); notify('已复制比对'); return; } catch (_) { /* file 协议或权限受限时走原生降级。 */ }
+      }
+      var area = el('textarea'); area.value = text; area.setAttribute('aria-label', '复制比对');
+      area.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;'; dialog.appendChild(area);
+      var active = document.activeElement;
+      try { area.focus(); area.select(); if (!document.execCommand('copy')) throw new Error('复制失败'); }
+      finally { area.remove(); if (active && active.isConnected) active.focus(); if (selection) { selection.removeAllRanges(); ranges.forEach(function (r) { selection.addRange(r); }); } }
+      notify('已复制比对');
+    } catch (_) { notify('复制失败，请划选复制'); }
+  }
   function createDiffEditor() {
     var diffRows = el('div', 'pw-diff-rows');
     diffRows.setAttribute('contenteditable', 'true'); diffRows.setAttribute('role', 'textbox');
     diffRows.setAttribute('aria-label', '编辑对比结果'); diffRows.setAttribute('aria-multiline', 'true');
+    diffRows.addEventListener('copy', function (e) {
+      if (!e.clipboardData) return;
+      var text = selectedDiffCopy(diffRows);
+      if (text === null) return;
+      e.clipboardData.setData('text/plain', text); e.preventDefault();
+    });
     diffRows.addEventListener('click', function (e) {
+      if (window.getSelection() && !window.getSelection().isCollapsed) return;
       var block = e.target.closest('.diff-del, .diff-add');
       if (!block || !diffRows.contains(block)) return;
       var pair = block.closest('.diff-pair');

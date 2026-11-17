@@ -8448,6 +8448,7 @@
       keepPrefillInReply: raw.keepPrefillExplicit === true && raw.keepPrefillInReply === true,
       keepPrefillExplicit: raw.keepPrefillExplicit === true
     };
+    if (typeof raw.xmlTag === 'string' && /^[a-zA-Z0-9_\u3400-\u9fff-]+$/.test(raw.xmlTag)) normalized.xmlTag = raw.xmlTag.toLowerCase();
     if (typeof raw.contentType === 'string') normalized.contentType = raw.contentType;
     if (Array.isArray(raw.items)) normalized.items = safeClone(raw.items);
     if (Array.isArray(raw.wordGroups)) normalized.wordGroups = safeClone(raw.wordGroups);
@@ -8542,6 +8543,12 @@
           .map(function (item) { return item.trim(); }).join('、');
         return prefix ? prefix + (joinedItems ? (/[：:]$/.test(prefix) ? '' : '\n') + joinedItems : '') : joinedItems;
       }).filter(Boolean).join('\n\n');
+    }
+    // XML 模块只在消费时还原外壳，编辑数据仍保持原正文；已有外壳不重复包裹。
+    var tag = mod.xmlTag;
+    if (content && typeof tag === 'string' && /^[a-zA-Z0-9_\u3400-\u9fff-]+$/.test(tag) &&
+        !new RegExp('^<' + tag + '>\\s*[\\s\\S]*</' + tag + '>$', 'i').test(content)) {
+      return '<' + tag + '>\n' + content + '\n</' + tag + '>';
     }
     return content;
   }
@@ -9816,7 +9823,7 @@
       var buildSection = function (title, text, emptyTip) {
         var body = text ? text : emptyTip;
         return '<div class="merged-section">' +
-          '<div class="merged-section-title">' + escapeHtml(title) + '</div>' +
+          '<div class="merged-section-title">' + escapeHtml(title) + '</div>\n\n' +
           '<pre class="merged-section-body' + (text ? '' : ' is-empty') + '">' +
           escapeHtml(body) + '</pre></div>';
       };
