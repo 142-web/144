@@ -453,7 +453,7 @@
     var a = paragraphs(left), b = paragraphs(right), fast = Math.max(left.length, right.length) > 15000 || a.length * b.length > 90000;
     var rows = [], i = 0, j = 0;
     function row(x, y, kind) {
-      rows.push({ left: x, right: y, kind: kind, parts: kind === 'rewrite' && !fast ? inlineDiff(x, y) : null });
+      rows.push({ left: x, right: y, kind: kind, parts: kind === 'rewrite' ? inlineDiff(x, y) : null });
     }
     // 单个非空段落（含局部选区）无条件进入段内比对，空白仍逐字保留。
     if (a.filter(function (p) { return p.trim(); }).length === 1 && b.filter(function (p) { return p.trim(); }).length === 1) {
@@ -475,7 +475,7 @@
         else row(a[i++], '', 'del');
       }
     } else {
-      // 超长输入只做段落级对比，有限前瞻防止平方级开销。
+      // 超长输入有限前瞻对齐；命中段落仍走有界逐字比对。
       while (i < a.length || j < b.length) {
         if (i >= a.length) { row('', b[j++], 'add'); continue; }
         if (j >= b.length) { row(a[i++], '', 'del'); continue; }
@@ -596,32 +596,6 @@
     }
     return dice;
   }
-  var xmlModuleNames = { role: '角色设定', profile: '角色档案', background: '背景设定', skills: '核心技能', rules: '核心规则', workflow: '工作流', output_format: '输出格式' };
-  function splitInputByModules(text) {
-    // 以完整父块为最小单位；同名嵌套计数，内部其他标签（含孤立 thinking）不拆分。
-    var blocks = [], starts = /<([a-zA-Z0-9_\u3400-\u9fff-]+)>/g, match;
-    while ((match = starts.exec(text))) {
-      var tag = match[1], pairs = new RegExp('<(/?)' + tag + '>', 'gi'), depth = 1, end;
-      pairs.lastIndex = starts.lastIndex;
-      while ((end = pairs.exec(text))) {
-        depth += end[1] ? -1 : 1;
-        if (!depth) break;
-      }
-      if (!end || depth) continue;
-      blocks.push({ tagName: tag.toLowerCase(), innerContent: text.slice(starts.lastIndex, end.index), raw: text.slice(match.index, pairs.lastIndex), start: match.index, end: pairs.lastIndex });
-      starts.lastIndex = pairs.lastIndex;
-    }
-    return blocks;
-  }
-  function xmlBody(text, tag) {
-    // 只剥第一个完整展示壳，壳后的附加 XML 原样保留；不能贪婪吃到后续同名闭合标签。
-    var first = splitInputByModules(text)[0];
-    if (first && first.tagName === tag && !text.slice(0, first.start).trim()) {
-      return first.innerContent.trim() + text.slice(first.end);
-    }
-    return text.trim();
-  }
-  function xmlShell(text, tag) { return '<' + tag + '>\n' + xmlBody(text, tag) + '\n</' + tag + '>'; }
   function normalizeMetadataHeads(text, left) {
     var names = { author: '作者', version: '版本', language: '语言', description: '核心描述', name: '名称', gender: '性别', age: '年龄', personality: '性格特征' };
     return text.replace(/^([\t ]*[-*+][\t ]+)(Author|Version|Language|Description|Name|Gender|Age|Personality)[\t ]*[:：][\t ]*/gim, function (all, prefix, key) {
@@ -629,134 +603,102 @@
       return new RegExp('^[\\t ]*[-*+][\\t ]+' + name + '[\\t ]*[:：]', 'm').test(left) ? prefix + name + '：' : all;
     });
   }
-  // 仅完整单一父块才剥壳，兄弟块及壳外文字不能误吞。
-  function outerXml(text) {
-    text = String(text || '').trim();
-    var blocks = splitInputByModules(text);
-    return blocks.length === 1 && blocks[0].start === 0 && blocks[0].end === text.length ? blocks[0] : null;
+  // 只按自然段和 Markdown 标题切分；每个字符（包括分隔空行）均保留。
+  function contentBlocks(text) {
+    var blocks = [], buffer = '';
+    (text.match(/[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$/g) || []).forEach(function (line) {
+      if (/^[\t ]*#{1,3}[\t ]+/.test(line) && buffer.trim()) {
+        blocks.push(buffer); buffer = '';
+      }
+      buffer += line;
+      if (!line.trim()) { blocks.push(buffer); buffer = ''; }
+    });
+    if (buffer) blocks.push(buffer);
+    return blocks;
   }
-  function bodyText(text) {
-    var shell = outerXml(text);
-    return shell ? shell.innerContent.trim() : String(text || '').trim();
+  function effectiveLines(text) {
+    return new Set(text.split(/\r\n|\r|\n/).map(function (line) { return line.trim(); })
+      .filter(function (line) { return line.length >= 4; }));
   }
-  function bodyMatchScore(source, input) {
-    var a = bodyText(source), b = bodyText(input);
+  // 有序双字组避免仅由零散同字触发高分；不识别任何标签语法。
+  function contentSimilarity(a, b) {
+    a = a.trim(); b = b.trim();
     if (!a || !b) return 0;
-    var linesA = new Set(a.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(function (s) { return s.length >= 6; }));
-    var linesB = new Set(b.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(function (s) { return s.length >= 6; }));
-    var shared = 0;
-    linesB.forEach(function (s) { if (linesA.has(s)) shared++; });
-    var score = Math.max(calculateSim(a, b), shared / Math.max(1, Math.min(linesA.size, linesB.size)));
-    if (shared >= 2) score = Math.max(score, 0.9);
-    var pa = paragraphs(a).filter(function (s) { return s.trim().length >= 8; });
-    var pb = paragraphs(b).filter(function (s) { return s.trim().length >= 8; });
-    pa.forEach(function (x) { pb.forEach(function (y) { score = Math.max(score, calculateSim(x, y)); }); });
+    if (a === b) return 1;
+    function pairs(text) {
+      var chars = Array.from(text), counts = new Map();
+      for (var i = 1; i < chars.length; i++) {
+        var key = chars[i - 1] + chars[i]; counts.set(key, (counts.get(key) || 0) + 1);
+      }
+      return { counts: counts, length: Math.max(0, chars.length - 1) };
+    }
+    return similarity(pairs(a), pairs(b));
+  }
+  function localContentScore(source, text, parts, lines) {
+    var input = text.trim();
+    if (!input || !source.trim()) return 0;
+    var score = contentSimilarity(source, input);
+    if (input.length >= 6 && source.includes(input)) score = Math.max(score, 0.95);
+    effectiveLines(input).forEach(function (line) {
+      if (lines.has(line)) score = Math.max(score, 0.9);
+      else if (line.length >= 6 && source.includes(line)) score = Math.max(score, 0.85);
+    });
+    parts.forEach(function (part) {
+      score = Math.max(score, contentSimilarity(part, input));
+      if (part.trim().length >= 6 && input.includes(part.trim())) score = Math.max(score, 0.9);
+    });
     return score;
   }
-  function autoMatchModules(preset, blocks) {
-    var groups = new Map(), pending = [], previous = null;
-    var modules = preset.modules.filter(function (m) { return m.contentType !== 'wordlist'; });
-    blocks.forEach(function (block) {
-      var module = block.tagName && (modules.find(function (m) { return String(m.xmlTag || '').toLowerCase() === block.tagName; }) ||
-        modules.find(function (m) { return m.name === block.tagName ||
-          (xmlModuleNames[block.tagName] && xmlModuleNames[block.tagName] === m.name); }));
-      if (!module) {
-        // XML 只以完整正文评分，禁止由内部某一行拉出无关模块。
-        var ranked = modules.map(function (m) { return { module: m, score: block.tagName
-          ? calculateSim(bodyText(m.content), block.innerContent.trim()) : bodyMatchScore(m.content, block.innerContent) }; })
-          .sort(function (a, b) { return b.score - a.score; });
-        if (ranked.length && ranked[0].score >= (block.tagName ? 0.45 : 0.55) &&
-            (!block.tagName || ranked[0].score - (ranked[1] ? ranked[1].score : 0) >= 0.15)) module = ranked[0].module;
-      }
-      if (!module) {
-        if (previous) groups.get(previous.id).appended.push(block.raw);
-        else pending.push(block.raw);
-        return;
-      }
-      var entry = groups.get(module.id);
-      if (entry) entry.right += '\n\n' + block.innerContent.trim();
-      else {
-        var shell = outerXml(module.content), tag = (shell && shell.tagName) || block.tagName;
-        entry = { tag: tag, right: block.innerContent.trim(), appended: pending.splice(0) };
-        groups.set(module.id, entry);
-      }
-      previous = module;
-    });
-    // 无任何可靠命中时不擅自选择首模块；原粘贴稿仍保留在输入框。
-    return modules.filter(function (m) { return groups.has(m.id); }).map(function (m) {
-      var entry = groups.get(m.id), content = m.content || '', shell = outerXml(content);
-      var wrapped = entry.tag && shell && shell.tagName === entry.tag;
-      var left = wrapped ? shell.innerContent.trim() : content.trim();
-      return { presetId: preset.id, moduleId: m.id, original: JSON.stringify(m), xmlTag: entry.tag,
-        bareXml: entry.tag && !wrapped, appended: entry.appended,
-        left: left, right: normalizeMetadataHeads(entry.right.trim(), left), name: m.name || '未命名模块' };
-    });
-  }
   function matchPasted(preset, pasted) {
-    var cleanedPasted = String(pasted || '').trim();
-    var fence = cleanedPasted.match(/^(`{3,}|~{3,})[^\r\n]*\r?\n([\s\S]*?)\r?\n\1[\t ]*$/);
-    if (fence) cleanedPasted = fence[2].trim();
-    pasted = cleanedPasted;
-    var xmlBlocks = splitInputByModules(cleanedPasted);
-    if (xmlBlocks.length) {
-      var mixed = [], cursor = 0;
-      xmlBlocks.forEach(function (block) {
-        var gap = pasted.slice(cursor, block.start);
-        if (gap.trim()) mixed.push({ tagName: '', innerContent: gap, raw: gap });
-        mixed.push(block); cursor = block.end;
-      });
-      var tail = pasted.slice(cursor);
-      if (tail.trim()) mixed.push({ tagName: '', innerContent: tail, raw: tail });
-      var matched = autoMatchModules(preset, mixed);
-      if (!matched.length) matched.matchError = '未精准匹配到对应模块，请在左侧点击选中目标模块后再对比';
-      return matched;
-    }
+    pasted = String(pasted || '');
+    // 仅完整首尾围栏可移除，不 trim 正文，也不改写换行。
+    var fence = pasted.match(/^(`{3,}|~{3,})[^\r\n]*\r?\n([\s\S]*?)\r?\n\1[\t ]*(?:\r?\n)?$/);
+    if (fence) pasted = fence[2];
     var modules = preset.modules.filter(function (m) { return m.contentType !== 'wordlist'; });
-    if (!modules.length) return [];
-    function rank(text) {
-      return modules.map(function (m) {
-        return { module: m, score: calculateSim(bodyText(m.content), text.trim()) };
-      }).sort(function (a, b) { return b.score - a.score; });
+    var blocks = contentBlocks(pasted), inputLines = effectiveLines(pasted);
+    var candidates = modules.map(function (m) {
+      var source = m.content || '', parts = Array.from(new Set(contentBlocks(source).map(function (part) { return part.trim(); }).filter(Boolean)));
+      var lines = effectiveLines(source), shared = 0, weighted = 0, total = 0, cache = new Map();
+      inputLines.forEach(function (line) { if (lines.has(line)) shared++; });
+      var scores = blocks.map(function (block) {
+        var key = block.trim();
+        if (!cache.has(key)) cache.set(key, localContentScore(source, block, parts, lines));
+        var score = cache.get(key), weight = key.length;
+        weighted += score * weight; total += weight;
+        return score;
+      });
+      var lineRatio = shared / Math.max(1, inputLines.size);
+      // 按整篇覆盖度加权，防止某一相似段落把多个模块的混合稿全部抢走。
+      return { module: m, scores: scores, lineRatio: lineRatio,
+        score: Math.max(contentSimilarity(source, pasted), lineRatio, weighted / Math.max(1, total)) };
+    }).sort(function (a, b) { return b.score - a.score; });
+    function task(m, text) {
+      return { presetId: preset.id, moduleId: m.id, original: JSON.stringify(m),
+        left: m.content, right: normalizeMetadataHeads(text, m.content), name: m.name || '未命名模块' };
     }
-    function titleKey(line) {
-      return line.trim().replace(/^#{1,6}\s*/, '').replace(/^[【\[]|[】\]]\s*[：:]?$/g, '').replace(/[：:]$/, '').trim();
+    var best = candidates[0], second = candidates[1];
+    // 有其他模块独占命中的段落时必须走混合路由，不能仅靠多数相同行吞并。
+    var mixed = best && blocks.some(function (block, index) {
+      return block.trim() && candidates.some(function (candidate) {
+        return candidate !== best && candidate.scores[index] >= 0.45 &&
+          candidate.scores[index] - best.scores[index] >= 0.15;
+      });
+    });
+    if (best && !mixed && ((best.score >= 0.45 && best.score - (second ? second.score : 0) >= 0.15) ||
+        (best.lineRatio > 0.3 && best.lineRatio - (second ? second.lineRatio : 0) >= 0.15))) {
+      return [task(best.module, pasted)];
     }
-    var groups = new Map(), pending = '', current = null;
-    function add(m, text) { groups.set(m.id, (groups.get(m.id) || '') + text); }
-    var blocks = [], buffer = '';
-    // 标题按整行精确识别；普通分隔线只切段，不写入目标正文。
-    (pasted.match(/[^\n]*\n|[^\n]+$/g) || []).forEach(function (line) {
-      var title = modules.find(function (m) { return m.name && titleKey(line) === m.name.trim(); });
-      if (title || /^\s*(?:-{3,}|\*{3,}|={3,})\s*$/.test(line)) {
-        if (buffer) blocks.push({ module: current, text: buffer });
-        buffer = ''; if (title) current = title;
-      } else buffer += line;
+    var groups = new Map(), pending = '', previous = null;
+    blocks.forEach(function (block, index) {
+      var ranked = candidates.slice().sort(function (a, b) { return b.scores[index] - a.scores[index]; });
+      var owner = ranked.length && ranked[0].scores[index] >= 0.45 ? ranked[0].module : previous;
+      if (!owner) { pending += block; return; }
+      groups.set(owner.id, (groups.get(owner.id) || '') + pending + block);
+      pending = ''; previous = owner;
     });
-    if (buffer) blocks.push({ module: current, text: buffer });
-    // 无明确标题或分隔线时保持整块，不按换行逐行跨模块配对。
-    var inputBlocks = blocks;
-    current = null;
-    var overall = rank(pasted)[0];
-    inputBlocks.forEach(function (block) {
-      var text = block.text, owner = block.module;
-      if (!text.trim() && !owner) {
-        if (current) add(current, text); else pending += text;
-        return;
-      }
-      if (!owner) {
-        var best = rank(text)[0];
-        owner = best.score >= 0.55 ? best.module :
-          (current || (overall.score >= 0.55 ? overall.module : null));
-        if (!owner) { pending += text; return; }
-      }
-      // 每个块仅写入唯一归属，禁止向未命中模块回填整稿。
-      add(owner, pending + text); pending = ''; current = owner;
-    });
-    return modules.filter(function (m) { return groups.has(m.id); }).map(function (m) {
-      var shell = outerXml(m.content), left = bodyText(m.content);
-      return { presetId: preset.id, moduleId: m.id, original: JSON.stringify(m), xmlTag: shell && shell.tagName,
-        left: left, right: normalizeMetadataHeads(groups.get(m.id).trim(), left), name: m.name || '未命名模块' };
-    });
+    var tasks = modules.filter(function (m) { return groups.has(m.id); }).map(function (m) { return task(m, groups.get(m.id)); });
+    if (!tasks.length) tasks.matchError = '未能从正文内容自动识别归属模块，请在左侧点击选中目标模块后再对比';
+    return tasks;
   }
   function compare() {
     var list = presets(), leftPreset = presetAt(list, 0), rightPreset = presetAt(list, 1), tasks = [];
@@ -772,13 +714,10 @@
         tasks = [{ presetId: leftPreset.id, moduleId: owner.id, original: JSON.stringify(owner), snippet: snippet,
           left: snippet.selectedText, right: pasted, name: owner.name || '未命名模块' }];
       } else if (chosen && chosen.length === 1) {
-        // 明确单选优先于任何 XML 路由；输入只与目标正文比对，绝不整块追加。
+        // 明确单选直接比对原文，保留尖括号、空白和换行。
         tasks = chosen.filter(function (m) { return m.contentType !== 'wordlist'; }).map(function (m) {
-          var shell = outerXml(pasted), content = (m.content || '').trim();
-          var wrapped = shell && new RegExp('^\\s*<' + shell.tagName + '>', 'i').test(content);
-          var right = shell && !wrapped ? shell.innerContent.trim() : pasted.trim();
-          return { presetId: leftPreset.id, moduleId: m.id, original: JSON.stringify(m), left: content,
-            right: normalizeMetadataHeads(right, content), name: m.name || '未命名模块' };
+          return { presetId: leftPreset.id, moduleId: m.id, original: JSON.stringify(m), left: m.content,
+            right: normalizeMetadataHeads(pasted, m.content), name: m.name || '未命名模块' };
         });
       } else tasks = leftPreset ? matchPasted(chosen && chosen.length ? { id: leftPreset.id, modules: chosen } : leftPreset, pasted) : [];
     } else if (leftPreset && rightPreset) {
@@ -815,8 +754,6 @@
       appendPart(group, 'del', oldPart); appendPart(group, 'add', newPart);
       if (group !== row) row.appendChild(group);
     }
-    // 标签壳只作固定包裹，绝不进入正文逐字比对流。
-    if (task.xmlTag) editor.appendChild(el('span', 'pw-xml-shell', '<' + task.xmlTag + '>\n'));
     result.rows.forEach(function (r, index) {
       // 连续的纯增删段也属于同一冲突，兼容低相似度与快速兜底。
       if ((r.kind === 'del' || r.kind === 'add') && index > 0 && /^(del|add)$/.test(result.rows[index - 1].kind)) return;
@@ -836,13 +773,6 @@
       });
       else appendChange(row, r.left, r.right);
       editor.appendChild(row);
-    });
-    if (task.xmlTag) editor.appendChild(el('span', 'pw-xml-shell', '\n</' + task.xmlTag + '>'));
-    editor.querySelectorAll('.pw-xml-shell').forEach(function (node) { node.contentEditable = 'false'; });
-    // 附加块独立于正文 Diff，保证原文不被重算、整块标签及正文统一标绿。
-    (task.appended || []).forEach(function (text) {
-      var row = el('span', 'pw-diff-row pw-add');
-      appendPart(row, 'add', '\n\n' + text); editor.appendChild(row);
     });
     editor.classList.toggle('pw-collapse', collapseInput.checked);
   }
@@ -883,8 +813,6 @@
       task.save.disabled = true; return notify('目标已变化，请重新对比');
     }
     var resolved = extractMergedText(task.editor);
-    if (task.xmlTag && task.bareXml) resolved = xmlBody(resolved, task.xmlTag);
-    if (task.xmlTag && !m.xmlTag) m.xmlTag = task.xmlTag;
     if (task.snippet) {
       var fullText = m.content || '', at = locateSnippet(fullText, task.snippet);
       if (at < 0) { task.save.disabled = true; return notify('片段已变化，请重新划选'); }
