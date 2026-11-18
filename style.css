@@ -2202,6 +2202,30 @@ body {
   background: rgba(217, 48, 37, 0.07) !important;
 }
 
+/* 错误状态随正式楼层保存，正文及思考保持原有配色。 */
+.generation-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--danger);
+  font-size: 12px;
+  max-width: 100%;
+}
+.generation-error > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.generation-error .msg-action-btn {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  color: inherit;
+}
+.generation-error svg { width: 14px; height: 14px; }
+
 /* 流式输出时的闪烁光标 */
 .bubble.streaming::after {
   content: "▍";

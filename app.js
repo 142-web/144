@@ -3590,9 +3590,9 @@
    * @returns {array} 该会话的 subChats 列表
    */
   function createEmptyMemoryData() {
-    return { summarizedFloorCursor: 0, lastSummaryAt: null,
+    return { enabled: false, overviewEnabled: false, summarizedFloorCursor: 0, lastSummaryAt: null,
       overviewEntry: { id: 'overview', name: '【00_全局最新状态与事件总目录】', content: '',
-        enabled: true, constant: true, keys: [], position: 'after_system', depth: 1 },
+        enabled: false, constant: true, keys: [], position: 'after_system', depth: 1 },
       eventEntries: [], snapshots: [] };
   }
 
@@ -4349,6 +4349,17 @@
     delBtn.title = '删除该对话';
     delBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg>';
 
+    var exportBtn = document.createElement('button');
+    exportBtn.type = 'button';
+    exportBtn.className = 'btn-session-icon btn-export-session';
+    exportBtn.title = '导出酒馆对话';
+    exportBtn.setAttribute('aria-label', exportBtn.title);
+    exportBtn.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>';
+    exportBtn.addEventListener('click', function (event) {
+      event.preventDefault(); event.stopPropagation();
+      if (window.MyChatExternalImporter) window.MyChatExternalImporter.downloadSession(window.MyChat.getSessionById(session.id));
+    });
+    actions.appendChild(exportBtn);
     actions.appendChild(pinBtn);
     actions.appendChild(charBtn);
     actions.appendChild(delBtn);
@@ -5224,7 +5235,7 @@
     msg.swipeIndex = idx;
     var branch = msg.swipes[idx] || {};
     msg.content = typeof branch.content === 'string' ? branch.content : '';
-    ['reasoning', 'nativeReasoning', 'tagReasoning'].forEach(function (key) {
+    ['reasoning', 'nativeReasoning', 'tagReasoning', 'generationError'].forEach(function (key) {
       if (typeof branch[key] === 'string' && branch[key]) msg[key] = branch[key];
       else delete msg[key];
     });
@@ -5416,6 +5427,11 @@
       branchMemory.eventEntries = JSON.parse(JSON.stringify(snapshot.eventEntries || []));
       branchMemory.snapshots = JSON.parse(JSON.stringify(snapshots.filter(function (item) { return item.cursor <= snapshot.cursor; })));
     }
+
+    // 新分支只恢复内容，不继承源通道的启用授权。
+    branchMemory.enabled = false;
+    branchMemory.overviewEnabled = false;
+    branchMemory.overviewEntry.enabled = false;
 
     var newSub = {
       id: genSubChatId(),
@@ -5766,6 +5782,7 @@
       renderUserBubble(bubble, msg);
     } else {
       renderAssistantBubble(bubble, msg, false);
+      if (msg.generationError) bubble.appendChild(buildGenerationError(msg.generationError, session, getActiveSubChatId(session), session.messages, msg));
     }
 
     // 操作栏固定在气泡内容最底部
@@ -5966,13 +5983,13 @@
 
   function messageRenderStamp(msg) {
     var imageStamp = (msg.generatedImages || []).map(function (image) { return [image.id, image.timestamp, image.prompt, image.size]; });
-    return JSON.stringify([msg.role, msg.content, msg.reasoning, msg.nativeReasoning, msg.tagReasoning, msg.meta, msg.attachments, msg.swipeIndex, msg.swipes, msg._pending, imageStamp]);
+    return JSON.stringify([msg.role, msg.content, msg.reasoning, msg.nativeReasoning, msg.tagReasoning, msg.generationError, msg.meta, msg.attachments, msg.swipeIndex, msg.swipes, msg._pending, imageStamp]);
   }
 
   function bindRenderedMessage(row, session, msg) {
     if (els.chatArea._messageResizeObserver) els.chatArea._messageResizeObserver.observe(row);
     var task = activeGenerationMap.get(generationKey(session.id, getActiveSubChatId(session)));
-    if (!task || task.assistantMsg !== msg) return;
+    if (!task || task.finished || task.assistantMsg !== msg) return;
     var bubble = row.querySelector('.bubble');
     if (task.bubbleRefs === bubble) return;
     task.bubbleRefs = bubble;
@@ -6081,6 +6098,10 @@
     var existing = new Map();
     var indices = new Map();
     messages.forEach(function (msg, index) { indices.set(msg, index); });
+    // 临时错误与历史遗留空气泡没有消息真源，每次重绘统一回收。
+    els.chatArea.querySelectorAll('.msg').forEach(function (row) {
+      if (!row._message) row.remove();
+    });
     var oldRows = Array.from(els.chatArea.querySelectorAll('.msg[data-index]'));
     if (changedChannel) renderedStartIndex = Math.max(0, messages.length - 10);
     else if (oldRows.length) {
@@ -6459,6 +6480,10 @@
     if (oldMeta && oldMeta.parentNode) oldMeta.parentNode.removeChild(oldMeta);
     var metaBar = buildMetaBar(msg, index);
     if (metaBar) row.appendChild(metaBar);
+    var oldError = bubble.querySelector('.generation-error');
+    if (oldError) oldError.remove();
+    if (msg.generationError) bubble.appendChild(buildGenerationError(msg.generationError, session,
+      getActiveSubChatId(session), session.messages, msg));
     row._message = msg;
     row._renderStamp = messageRenderStamp(msg);
   }
@@ -6468,13 +6493,60 @@
    * @param {string} message 错误描述
    * @param {boolean} [noScroll] 为 true 时不强制滚动到聊天室底部
    */
-  function appendError(message, noScroll) {
+  function buildGenerationError(message, session, subId, messages, msg, cutoffIndex) {
+    var strip = document.createElement('div');
+    strip.className = 'generation-error';
+    strip.setAttribute('role', 'status');
+    var userIndex = typeof cutoffIndex === 'number' ? cutoffIndex : messages.indexOf(msg) - 1;
+    while (userIndex >= 0 && messages[userIndex].role !== 'user') userIndex--;
+    var sourceUser = messages[userIndex];
+    var sourceSwipe = msg && msg.swipeIndex;
+    var text = document.createElement('span');
+    text.textContent = msg ? '⚠️ 生成中途断开（' + message + '）' : '请求出错：' + message;
+    strip.appendChild(text);
+    function valid() {
+      return session && getSession(session.id) === session && isCurrentSession(session, subId) &&
+        getSubChatMessages(session, subId) === messages && !isChannelGenerating(session.id, subId) &&
+        !pendingReplyPolicies.has(generationKey(session.id, subId)) &&
+        (!msg || (messages.indexOf(msg) >= 0 && msg.swipeIndex === sourceSwipe && msg.generationError === message));
+    }
+    function action(title, icon, handler) {
+      var button = document.createElement('button');
+      button.type = 'button'; button.className = 'msg-action-btn';
+      button.title = title; button.setAttribute('aria-label', title);
+      button.innerHTML = icon;
+      button.addEventListener('click', function (event) {
+        event.preventDefault(); event.stopPropagation();
+        if (valid()) handler();
+      });
+      strip.appendChild(button);
+    }
+    action('重试', ACTION_ICONS.regen, function () {
+      if (!sourceUser || messages[userIndex] !== sourceUser) return;
+      if (!msg) strip.closest('.msg').remove();
+      void requestAssistantReply(session, {subChatId:subId, cutoffUserIndex:userIndex,
+        reuseIndex:msg ? messages.indexOf(msg) : -1, keepScroll:true, swipeBranch:false});
+    });
+    action(msg ? '忽略' : '删除', msg ? ACTION_ICONS.copied : ACTION_ICONS.delete, function () {
+      if (!msg) { strip.closest('.msg').remove(); return; }
+      delete msg.generationError;
+      if (Array.isArray(msg.swipes) && msg.swipes[normalizeSwipeIndex(msg)]) delete msg.swipes[normalizeSwipeIndex(msg)].generationError;
+      session.updatedAt = Date.now();
+      flushSave(); touchLastModified(); scheduleCloudUpload();
+      renderMessages({keepScroll:true});
+    });
+    return strip;
+  }
+
+  function appendError(message, noScroll, session, subId, messages, cutoffIndex) {
+    session = session || getCurrentSession();
+    if (!session) return null;
+    subId = subId || getActiveSubChatId(session);
+    messages = messages || getSubChatMessages(session, subId);
+    if (!messages || !isCurrentSession(session, subId) || getSubChatMessages(session, subId) !== messages) return null;
+    if (typeof cutoffIndex !== 'number') cutoffIndex = messages.length - 1;
     var bubble = appendMessage('assistant', '', noScroll);
-    ensureBubbleParts(bubble);
-    bubble._nativeCot.style.display = 'none';
-    bubble._tagCot.style.display = 'none';
-    bubble._mdBody.style.display = '';
-    bubble._mdBody.textContent = '请求出错：' + message;
+    bubble.replaceChildren(buildGenerationError(message, session, subId, messages, null, cutoffIndex));
     bubble.classList.add('bubble-error');
     if (!noScroll) scrollToBottom();
     return bubble;
@@ -8448,6 +8520,9 @@
       keepPrefillInReply: raw.keepPrefillExplicit === true && raw.keepPrefillInReply === true,
       keepPrefillExplicit: raw.keepPrefillExplicit === true
     };
+    if (['system', 'user', 'assistant'].indexOf(raw.role) !== -1) normalized.role = raw.role;
+    if ([0, 1, 'before_system', 'after_system', 'at_depth', 'post_history'].indexOf(raw.position) !== -1) normalized.position = raw.position;
+    if (typeof raw.depth === 'number' && isFinite(raw.depth)) normalized.depth = Math.max(0, Math.min(999, Math.round(raw.depth)));
     if (typeof raw.xmlTag === 'string' && /^[a-zA-Z0-9_\u3400-\u9fff-]+$/.test(raw.xmlTag)) normalized.xmlTag = raw.xmlTag.toLowerCase();
     if (typeof raw.contentType === 'string') normalized.contentType = raw.contentType;
     if (Array.isArray(raw.items)) normalized.items = safeClone(raw.items);
@@ -8553,6 +8628,35 @@
     return content;
   }
 
+  // 酒馆数值位置 1 与 at_depth 等价；显式深度优先于旧 roleType 分组。
+  function presetModulePlacement(mod) {
+    if (mod.position === 1 || mod.position === 'at_depth') return 'at_depth';
+    if (mod.roleType === 'prefill') return '';
+    if (mod.position === 'before_system' || mod.position === 'after_system') return mod.position;
+    if (mod.role && mod.role !== 'system' && mod.roleType !== 'post_history') return 'after_system';
+    return '';
+  }
+
+  function injectPresetPositionedModules(messages, preset, session) {
+    var modules = preset && Array.isArray(preset.modules) ? preset.modules : [];
+    var head = 0;
+    while (head < messages.length && messages[head].role === 'system') head++;
+    var slots = new Map();
+    modules.forEach(function (mod) {
+      if (!mod || mod.enabled !== true) return;
+      var placement = presetModulePlacement(mod), content = presetModuleText(mod);
+      if (!placement || !content) return;
+      var index = placement === 'before_system' ? 0 : placement === 'after_system' ? head :
+        Math.max(head, messages.length - (typeof mod.depth === 'number' ? mod.depth : 4));
+      if (!slots.has(index)) slots.set(index, []);
+      slots.get(index).push({role:mod.role || (mod.roleType === 'prefill' ? 'assistant' : 'system'), content:replaceMacros(content, session)});
+    });
+    // 深度按同一历史快照计算，同深度保持模块顺序，不互相挤动。
+    Array.from(slots.keys()).sort(function (a, b) { return b - a; }).forEach(function (index) {
+      messages.splice.apply(messages, [index, 0].concat(slots.get(index)));
+    });
+  }
+
   /**
    * 把某个大预设下「已开启、非空、且作用方式为常规系统指令」的小模块拼接为顶部 #0 系统提示词
    * 注意：prefill / post_history 模块不参与这里，由 collectPresetRoleParts 单独收集
@@ -8564,7 +8668,7 @@
     preset.modules.forEach(function (mod) {
       if (!mod || mod.enabled !== true) return;
       // 仅常规系统指令合并到顶部 #0
-      if (mod.roleType && mod.roleType !== 'system') return;
+      if (presetModulePlacement(mod) || (mod.roleType && mod.roleType !== 'system')) return;
       var content = presetModuleText(mod);
       if (!content) return;
       parts.push(content);
@@ -8585,7 +8689,7 @@
     var keepPrefill = false;
     if (preset && Array.isArray(preset.modules)) {
       preset.modules.forEach(function (mod) {
-        if (!mod || mod.enabled !== true) return;
+        if (!mod || mod.enabled !== true || presetModulePlacement(mod)) return;
         var content = presetModuleText(mod);
         if (!content) return;
         if (mod.roleType === 'prefill') {
@@ -10380,6 +10484,8 @@
     // 仅在勾选「保留显示」时才把预输入回显到 AI 气泡开头
     var prefillPrefix = roleParts.keepPrefill && prefillText ? prefillText : '';
 
+    injectPresetPositionedModules(requestMessages, preparedPreset, session);
+
     // beforeSend 阀门：正则发送预处理 / 宏变量替换 / 预输入 Prefill 的统一拦截点
     var pipedMessages = runPipeline('beforeSend', requestMessages, {
       session: session,
@@ -10702,14 +10808,15 @@
         reasoning: assistantMsg.reasoning,
         nativeReasoning: assistantMsg.nativeReasoning,
         tagReasoning: assistantMsg.tagReasoning,
-        meta: assistantMsg.meta
+        meta: assistantMsg.meta,
+        generationError: assistantMsg.generationError
       };
 
       if (swipeBranchMode) {
         // ---- 多分支保留：旧正文先固化为分支，再追加新空槽位并指向它 ----
         if (!Array.isArray(assistantMsg.swipes) || !assistantMsg.swipes.length) {
           var seedBranch = { content: assistantMsg.content || '' };
-          ['reasoning', 'nativeReasoning', 'tagReasoning'].forEach(function (key) {
+          ['reasoning', 'nativeReasoning', 'tagReasoning', 'generationError'].forEach(function (key) {
             if (assistantMsg[key]) seedBranch[key] = assistantMsg[key];
           });
           seedBranch.timestamp = Date.now();
@@ -10720,8 +10827,9 @@
           if (assistantMsg.swipes[curIdx]) {
             assistantMsg.swipes[curIdx].content =
               typeof assistantMsg.content === 'string' ? assistantMsg.content : assistantMsg.swipes[curIdx].content;
-            ['reasoning', 'nativeReasoning', 'tagReasoning'].forEach(function (key) {
+            ['reasoning', 'nativeReasoning', 'tagReasoning', 'generationError'].forEach(function (key) {
               if (assistantMsg[key]) assistantMsg.swipes[curIdx][key] = assistantMsg[key];
+              else delete assistantMsg.swipes[curIdx][key];
             });
           }
         }
@@ -10735,6 +10843,7 @@
       delete assistantMsg.nativeReasoning;
       delete assistantMsg.tagReasoning;
       delete assistantMsg.meta;
+      delete assistantMsg.generationError;
       assistantMsg._pending = true;
     } else {
       // 目标位置没有 AI 消息：插入新的占位消息，后续楼层自动顺延
@@ -11104,6 +11213,8 @@
             if (typeof reusedBackup[key] === 'string') assistantMsg[key] = reusedBackup[key];
             else delete assistantMsg[key];
           });
+          if (reusedBackup.generationError) assistantMsg.generationError = reusedBackup.generationError;
+          else delete assistantMsg.generationError;
           if (reusedBackup.meta) {
             assistantMsg.meta = reusedBackup.meta;
           } else {
@@ -11120,25 +11231,18 @@
           if (placeholderIndex !== -1) targetMessages.splice(placeholderIndex, 1);
         }
 
-        // 只把错误展示在当前视图上，不写入历史记录
-        if (!task.controller.signal.aborted && isCurrentSession(targetSession, targetSubChatId)) {
-          ensureBubbleParts(bubble);
-          bubble._nativeCot.style.display = 'none';
-          bubble._tagCot.style.display = 'none';
-          bubble._mdBody.style.display = '';
-          bubble._mdBody._lastHtml = '';
-          bubble._mdBody.textContent = '请求出错：' + errorText;
-          bubble.classList.add('bubble-error');
-          if (!keepScroll) scrollToBottom();
-        }
-      } else if (!task.controller.signal.aborted && isCurrentSession(targetSession, targetSubChatId)) {
-        // 已有部分内容：保留内容，另起一条错误气泡（中间楼层重答时不强制滚底）
-        appendError(errorText, keepScroll);
+        // 无输出仅显示可删除的临时错误，收尾重绘后再挂载。
+        task.showStandaloneError = !task.controller.signal.aborted;
+      } else if (!task.controller.signal.aborted) {
+        // 正文、原生思考、标签思考任一非空，均作为正式助手楼层保存。
+        assistantMsg.generationError = errorText;
       }
     } finally {
       if (debug && traceId) debug.finish(traceId, {status:task.error ? 'error' : 'success', response:{
         rawText:answer || debugRawText, parsedData:debugParsed || {content:answer,reasoning:reasoning},
         wireText:debugRawText, httpStatus:res ? res.status : null, errorMsg:task.error || '', validationResult:{valid:!task.error}}});
+      // 请求已结束：重绘不得再绑定已结束的流式任务。
+      task.finished = true;
       // 请求已结束：移除等待标记，读秒计时器一并清理
       delete assistantMsg._pending;
       if (nonStreamTimer) {
@@ -11213,7 +11317,7 @@
           }
         } else if (assistantMsg.swipes[finalIdx]) {
           assistantMsg.swipes[finalIdx].content = finalContent;
-          ['reasoning', 'nativeReasoning', 'tagReasoning'].forEach(function (key) {
+          ['reasoning', 'nativeReasoning', 'tagReasoning', 'generationError'].forEach(function (key) {
             if (assistantMsg[key]) assistantMsg.swipes[finalIdx][key] = assistantMsg[key];
             else delete assistantMsg.swipes[finalIdx][key];
           });
@@ -11326,6 +11430,13 @@
         // 用带操作栏的标准行替换临时流式气泡行，保证索引与数组严格对应
         replaceBubbleRowWithActions(bubble, session, assistantMsg);
         if (!keepScroll) scrollToBottom();
+      }
+      if (isCurrentSession(targetSession, targetSubChatId) &&
+          getSession(session.id) === targetSession && getSubChatMessages(session, targetSubChatId) === targetMessages) {
+        task.latestRender = assistantMsg;
+        task.waitText = '';
+        renderMessages({keepScroll:keepScroll});
+        if (task.showStandaloneError) appendError(task.error, keepScroll, targetSession, targetSubChatId, targetMessages, cutoffUserIndex);
       }
     }
     } finally {

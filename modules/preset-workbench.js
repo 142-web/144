@@ -66,7 +66,8 @@
     expand: 'm6 9 6 6 6-6', compare: 'M8 3v18M16 3v18M3 8h18M3 16h18',
     paste: 'M9 5H5v16h14V5h-4M9 3h6v4H9z', check: 'm4 12 5 5L20 6',
     snapshot: 'M12 8v5l3 2M3 11a9 9 0 1 1 2 7M3 4v7h7',
-    plus: 'M12 5v14M5 12h14'
+    plus: 'M12 5v14M5 12h14',
+    export: 'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5'
   };
   function el(tag, cls, text) {
     var node = document.createElement(tag);
@@ -607,32 +608,48 @@
         if (!depth) break;
       }
       if (!end || depth) continue;
-      blocks.push({ tagName: tag.toLowerCase(), innerContent: text.slice(starts.lastIndex, end.index) });
+      blocks.push({ tagName: tag.toLowerCase(), innerContent: text.slice(starts.lastIndex, end.index), raw: text.slice(match.index, pairs.lastIndex), start: match.index, end: pairs.lastIndex });
       starts.lastIndex = pairs.lastIndex;
     }
     return blocks;
   }
   function xmlBody(text, tag) {
-    var shell = new RegExp('^\\s*<' + tag + '>([\\s\\S]*)</' + tag + '>\\s*$', 'i').exec(text);
-    return shell ? shell[1].trim() : text.trim();
+    // 只剥第一个完整展示壳，壳后的附加 XML 原样保留；不能贪婪吃到后续同名闭合标签。
+    var first = splitInputByModules(text)[0];
+    if (first && first.tagName === tag && !text.slice(0, first.start).trim()) {
+      return first.innerContent.trim() + text.slice(first.end);
+    }
+    return text.trim();
   }
   function xmlShell(text, tag) { return '<' + tag + '>\n' + xmlBody(text, tag) + '\n</' + tag + '>'; }
   function autoMatchModules(preset, blocks) {
-    var groups = new Map();
+    var groups = new Map(), current = null, pending = [];
     blocks.forEach(function (block) {
       var module = preset.modules.find(function (m) { return m.contentType !== 'wordlist' && String(m.xmlTag || '').toLowerCase() === block.tagName; }) ||
         preset.modules.find(function (m) { return m.contentType !== 'wordlist' && !m.xmlTag && xmlModuleNames[block.tagName] === m.name; });
-      // 未匹配块（特别是已剥离的开场白）直接忽略，绝不降级到字面相似度。
-      if (!module) return;
+      // 未知块只追加到最近命中项；前置块暂存到首个命中项，不做散句相似度回填。
+      if (!module) { (current ? current.appended : pending).push(block.raw); return; }
       var entry = groups.get(module.id);
       if (entry) entry.right += '\n\n' + block.innerContent.trim();
-      else groups.set(module.id, { module: module, tag: block.tagName, right: block.innerContent.trim() });
+      else {
+        entry = { tag: block.tagName, right: block.innerContent.trim(), appended: [] };
+        groups.set(module.id, entry);
+      }
+      if (pending.length) { entry.appended.push.apply(entry.appended, pending); pending = []; }
+      current = entry;
     });
+    // 全部未知时也不丢稿：原模块不变，完整块追加到首个可用文本模块。
+    if (pending.length) {
+      var first = preset.modules.find(function (m) { return m.contentType !== 'wordlist'; });
+      if (first) groups.set(first.id, { right: first.content || '', appended: pending });
+    }
     return preset.modules.filter(function (m) { return groups.has(m.id); }).map(function (m) {
-      var entry = groups.get(m.id);
+      var entry = groups.get(m.id), content = m.content || '';
+      var wrapped = entry.tag && new RegExp('^\\s*<' + entry.tag + '>', 'i').test(content);
       return { presetId: preset.id, moduleId: m.id, original: JSON.stringify(m), xmlTag: entry.tag,
-        bareXml: !new RegExp('^\\s*<' + entry.tag + '>', 'i').test(m.content || ''),
-        left: xmlShell(m.content || '', entry.tag), right: xmlShell(entry.right, entry.tag), name: m.name || '未命名模块' };
+        bareXml: entry.tag && !wrapped, appended: entry.appended,
+        left: entry.tag && !wrapped ? '<' + entry.tag + '>\n' + content + '\n</' + entry.tag + '>' : content,
+        right: entry.tag ? xmlShell(entry.right, entry.tag) : entry.right, name: m.name || '未命名模块' };
     });
   }
   function matchPasted(preset, pasted) {
@@ -769,6 +786,11 @@
       else appendChange(row, r.left, r.right);
       editor.appendChild(row);
     });
+    // 附加块独立于正文 Diff，保证原文不被重算、整块标签及正文统一标绿。
+    (task.appended || []).forEach(function (text) {
+      var row = el('span', 'pw-diff-row pw-add');
+      appendPart(row, 'add', '\n\n' + text); editor.appendChild(row);
+    });
     editor.classList.toggle('pw-collapse', collapseInput.checked);
   }
   // 只读取当前编辑区的深克隆，物理剔除淘汰内容，不依赖缓存或可见性。
@@ -839,7 +861,14 @@
     [undoButton, redoButton].forEach(function (button, index) {
       button.classList.add('pw-history'); button.append(el('span', '', index ? '下一步' : '上一步'), el('span', 'pw-history-badge', '0')); button.disabled = true;
     });
-    headActions.append(undoButton, redoButton, iconButton('close', '关闭', function () { dialog.close(); }));
+    var exportButton = iconButton('export', '导出当前预设', function () {
+      var preset = presetAt(presets(), 0), tavern = window.MyChatTavern;
+      if (!preset) return notify('请先选择预设');
+      if (!tavern || typeof tavern.exportPreset !== 'function') return notify('导出暂不可用');
+      try { tavern.exportPreset(preset.id); } catch (err) { notify('预设导出失败'); }
+    });
+    exportButton.classList.add('pw-export-preset');
+    headActions.append(exportButton, undoButton, redoButton, iconButton('close', '关闭', function () { dialog.close(); }));
     head.append(modes, headActions); dialog.appendChild(head);
     fusionBar = el('div', 'pw-bar pw-fusion-bar');
     fusionLeft = iconButton('copyRight', '将左栏已选融合至右栏 →', function () { fuseSelected(0); });

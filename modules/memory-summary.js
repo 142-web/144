@@ -398,7 +398,7 @@
       return Object.assign(existing || normalizeEntry(evt, 0), evt, {id:storageId, name: '【' + evt.id + '】 ' + evt.floors + ' ' + evt.title,
         content: evt.detail, keys: [evt.id], constant: false, position: 'at_depth', depth: 2});
     });
-    if (!data.overviewEntry) data.overviewEntry = normalizeEntry({id:'overview', name:OVERVIEW_TITLE}, 0);
+    if (!data.overviewEntry) data.overviewEntry = normalizeEntry({id:'overview', name:OVERVIEW_TITLE, enabled:false}, 0);
     data.overview = renderGlobalOverview(state, {includeEventIndex:true, isForArchivist:false});
     data.overviewEntry.content = data.overview;
     data.overviewEntry.constant = true;
@@ -463,11 +463,12 @@
 
   function createMemoryData(mode = 'rp') {
     return {
+      enabled:false, overviewEnabled:false,
       memoryState:createDefaultMemoryState(mode), memoryMode:normalizeMemoryMode(mode),
       summarizedFloorCursor: 0, lastSummaryAt: null,
       lastRecallCacheKey: '', lastRecalledEventIds: [],
       overviewEntry: normalizeEntry({ id: 'overview', name: OVERVIEW_TITLE, content: '',
-        constant: true, enabled: true, position: 'after_system' }, 0),
+        constant: true, enabled: false, position: 'after_system' }, 0),
       eventEntries: [], snapshots: []
     };
   }
@@ -550,6 +551,10 @@
     if (!owner.memoryData || typeof owner.memoryData !== 'object') owner.memoryData = createMemoryData(getMeta(session).memoryMode);
     var data = owner.memoryData;
     if (!data.overviewEntry) data.overviewEntry = createMemoryData().overviewEntry;
+    if (typeof data.enabled !== 'boolean') data.enabled = false;
+    // 旧总纲的显式布尔开关保留；缺省绝不推断为开启。
+    if (typeof data.overviewEnabled !== 'boolean') data.overviewEnabled = data.overviewEntry.enabled === true;
+    data.overviewEntry.enabled = data.overviewEnabled;
     if (!Array.isArray(data.eventEntries)) data.eventEntries = Array.isArray(data.events) ? data.events.map(function (evt) {
       return Object.assign({}, evt, {content:evt.detail});
     }) : [];
@@ -589,6 +594,7 @@
     }).map(function (entry, idx) {
       var normalized = normalizeEntry(entry, idx);
       if (entry === data.overviewEntry) {
+        normalized.enabled = typeof data.overviewEnabled === 'boolean' ? data.overviewEnabled : entry.enabled === true;
         normalized.name = OVERVIEW_TITLE;
         normalized.constant = true;
         normalized.position = 'after_system';
@@ -2184,10 +2190,11 @@
     var ta = pane.querySelector('#ms-overview-text');
     ta.value = data.overviewEntry.content;
     var enabled = pane.querySelector('#ms-overview-enabled');
-    enabled.checked = data.overviewEntry.enabled !== false;
+    enabled.checked = data.overviewEnabled === true;
     function save() {
       if (memoryOwner(session) !== owner || owner.memoryData !== data) return;
       data.overviewEntry.content = ta.value;
+      data.overviewEnabled = enabled.checked;
       data.overviewEntry.enabled = enabled.checked;
       saveSession(session);
       refreshTokenMeter();
@@ -2197,6 +2204,9 @@
       if (!await window.showAppConfirm({title:'重置记忆', message:'清空当前分支记忆？', danger:true})) return;
       if (memoryOwner(session) !== owner || owner.memoryData !== data) return;
       var restored = createMemoryData(data.memoryState.mode);
+      restored.enabled = data.enabled;
+      restored.overviewEnabled = data.overviewEnabled;
+      restored.overviewEntry.enabled = data.overviewEnabled;
       ensureMemoryStateSynced(restored);
       owner.memoryData = restored;
       if (!saveSession(session)) { owner.memoryData = data; return; }
@@ -2382,11 +2392,18 @@
       var legacy = books.find(function (book) { return book.id === meta.bookId && book.comment === BOOK_FLAG; });
       var changed = false;
       if (legacy) {
+        var previousData = memoryOwner(session).memoryData;
+        var explicitOverview = previousData && typeof previousData.overviewEnabled === 'boolean' ? previousData.overviewEnabled :
+          previousData && previousData.overviewEntry && typeof previousData.overviewEntry.enabled === 'boolean' ? previousData.overviewEntry.enabled : null;
         var data = getMemoryData(session);
         if (!data.summarizedFloorCursor && !data.eventEntries.length &&
             !data.memoryState.sceneState && !Object.keys(data.memoryState.characters).length && !Object.keys(data.memoryState.worldAndLore).length) {
           var overview = findOverviewEntry(legacy);
-          if (overview) data.overviewEntry = JSON.parse(JSON.stringify(overview));
+          if (overview) {
+            data.overviewEntry = JSON.parse(JSON.stringify(overview));
+            data.overviewEnabled = explicitOverview === null ? overview.enabled === true : explicitOverview;
+            data.overviewEntry.enabled = data.overviewEnabled;
+          }
           data.eventEntries = JSON.parse(JSON.stringify(listEventEntries(legacy)));
           data.summarizedFloorCursor = clampInt(meta.lastSummarizedFloor, 0, 999999, 0);
           data.lastSummaryAt = meta.lastSummaryAt || null;
@@ -2691,6 +2708,9 @@
     var snapshots = data.snapshots.filter(function (item) { return Number.isInteger(item.cursor) && item.cursor <= total; });
     var target = snapshots.slice().sort(function (a, b) { return b.cursor - a.cursor || b.timestamp - a.timestamp; })[0];
     var restored = createMemoryData(data.memoryState.mode);
+    restored.enabled = data.enabled;
+    restored.overviewEnabled = data.overviewEnabled;
+    restored.overviewEntry.enabled = data.overviewEnabled;
     if (target) {
       restored.summarizedFloorCursor = target.cursor;
       restored.lastSummaryAt = target.timestamp || null;
@@ -2764,6 +2784,8 @@
       if (!session) return false;
       var data = getMemoryData(session, memoryOwner(session));
       data.enabled = true;
+      data.overviewEnabled = true;
+      data.overviewEntry.enabled = true;
       return saveSession(session);
     },
     // 立即增量总结（供外部 / 控制台调用）

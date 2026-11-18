@@ -1,5 +1,5 @@
 /* ===================================================================
-   MyChat 酒馆导入器（modules/tavern-importer.js）
+   MyChat 酒馆预设与角色卡互通（modules/tavern-importer.js）
    --------------------------------------------------------------
    1. 纯前端 PNG 角色卡解析（不依赖任何第三方库）：
         tEXt（明文）/ zTXt（zlib 压缩，如「雌小鬼.png」）/ iTXt（自适应）
@@ -250,6 +250,7 @@
       img.onerror = function () {
         reject(new Error('头像解析失败'));
       };
+      if (/^https?:/i.test(url)) img.crossOrigin = 'anonymous';
       img.src = url;
     });
   }
@@ -281,6 +282,316 @@
       return '';
     } finally {
       if (url) URL.revokeObjectURL(url);
+    }
+  }
+
+  /* ================= 资产导出与扩展校验 ================= */
+
+  function record(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  // 扩展是形状可信的数据，不是可执行配置；拒绝原型键，绝不直接合并到宿主。
+  function copy(value) {
+    return JSON.parse(JSON.stringify(value), function (key, item) {
+      return key === '__proto__' || key === 'constructor' || key === 'prototype' ? undefined : item;
+    });
+  }
+
+  function extension(data, kind) {
+    var ext = data && data._mychat_ext;
+    return record(ext) && ext.format === 'mychat' && ext.version === 1 && ext.type === kind ? ext : null;
+  }
+
+  function stringList(value) {
+    return Array.isArray(value) && value.every(function (s) { return typeof s === 'string'; });
+  }
+
+  function validModule(m) {
+    return record(m) && typeof m.id === 'string' && typeof m.name === 'string' && typeof m.content === 'string' &&
+      ['enabled', 'keepPrefillInReply', 'keepPrefillExplicit'].every(function (key) { return m[key] === undefined || typeof m[key] === 'boolean'; }) &&
+      (m.roleType === undefined || ['system', 'prefill', 'post_history'].indexOf(m.roleType) !== -1) &&
+      (m.role === undefined || ['system', 'user', 'assistant'].indexOf(m.role) !== -1) &&
+      (m.position === undefined || [0, 1, 'before_system', 'after_system', 'at_depth', 'post_history'].indexOf(m.position) !== -1) &&
+      (m.depth === undefined || isNum(m.depth) && m.depth >= 0 && m.depth <= 999 && Math.round(m.depth) === m.depth) &&
+      (m.xmlTag === undefined || typeof m.xmlTag === 'string' && /^[a-zA-Z0-9_\u3400-\u9fff-]+$/.test(m.xmlTag)) &&
+      (m.items === undefined || stringList(m.items)) &&
+      (m.wordGroups === undefined || Array.isArray(m.wordGroups) && m.wordGroups.every(function (g) {
+        return record(g) && typeof g.id === 'string' && typeof g.prefix === 'string' && stringList(g.items);
+      }));
+  }
+
+  function validPreset(preset) {
+    return record(preset) && typeof preset.name === 'string' && Array.isArray(preset.modules) && preset.modules.every(validModule) &&
+      (preset.firstMessage === undefined || typeof preset.firstMessage === 'string') &&
+      (preset.regexRules === undefined || validRules(preset.regexRules)) &&
+      (preset.quickModes === undefined || Array.isArray(preset.quickModes) && preset.quickModes.every(function (q) {
+        return record(q) && typeof q.id === 'string' && typeof q.name === 'string' && stringList(q.enabledModuleIds);
+      })) && (preset.snapshots === undefined || Array.isArray(preset.snapshots) && preset.snapshots.every(function (s) {
+        return record(s) && typeof s.id === 'string' && typeof s.name === 'string' && Array.isArray(s.modules) && s.modules.every(validModule);
+      }));
+  }
+
+  function validRules(rules) {
+    return Array.isArray(rules) && rules.every(function (r) {
+      return record(r) && typeof r.pattern === 'string' && (r.replacement === undefined || typeof r.replacement === 'string');
+    });
+  }
+
+  function presetSource(source) {
+    if (record(source)) return copy(source);
+    var list = bridge.getPromptPresets();
+    var session = bridge.getCurrentSession();
+    var id = source || (session && session.presetId);
+    var preset = list.find(function (p) { return p.id === id; });
+    if (!preset) throw new Error('请先选择预设');
+    return copy(preset);
+  }
+
+  function sessionSource(source) {
+    var session = typeof source === 'string' ? bridge.getSessionById(source) : source || bridge.getCurrentSession();
+    if (!record(session)) throw new Error('未找到角色会话');
+    return session;
+  }
+
+  function regexScripts(rules) {
+    return (rules || []).filter(record).map(function (r) {
+      var stages = Array.isArray(r.stages) ? r.stages : [r.stage];
+      var targets = Array.isArray(r.targets) ? r.targets : ['user', 'assistant'];
+      return { id: r.id, scriptName: r.name || '', findRegex: '/' + (r.pattern || '') + '/' + (r.flags || ''),
+        replaceString: r.replacement || '', disabled: r.enabled === false,
+        placement: targets.map(function (t) { return t === 'user' ? 1 : t === 'assistant' ? 2 : 0; }).filter(Boolean),
+        markdownOnly: stages.indexOf('onRender') !== -1 && stages.indexOf('onReceive') === -1,
+        promptOnly: stages.indexOf('beforeSend') !== -1 && stages.indexOf('onReceive') === -1 };
+    });
+  }
+
+  function moduleText(mod) {
+    var text = mod.content || '';
+    if (mod.contentType === 'wordlist') {
+      var groups = Array.isArray(mod.wordGroups) ? mod.wordGroups : [{ prefix: text, items: mod.items || [] }];
+      text = groups.map(function (g) {
+        var prefix = typeof g.prefix === 'string' ? g.prefix : '';
+        var words = (g.items || []).filter(function (s) { return typeof s === 'string' && s.trim(); }).map(function (s) { return s.trim(); }).join('、');
+        return prefix + (prefix && words && !/[：:]$/.test(prefix) ? '\n' : '') + words;
+      }).filter(Boolean).join('\n\n');
+    }
+    if (mod.xmlTag && /^[a-zA-Z0-9_\u3400-\u9fff-]+$/.test(mod.xmlTag)) {
+      var tag = mod.xmlTag.toLowerCase();
+      if (!(text.trim().toLowerCase().startsWith('<' + tag + '>') && text.trim().toLowerCase().endsWith('</' + tag + '>'))) {
+        text = '<' + tag + '>\n' + text + '\n</' + tag + '>';
+      }
+    }
+    return text;
+  }
+
+  function buildPreset(source, params) {
+    var preset = presetSource(source);
+    if (!validPreset(preset)) throw new Error('预设格式错误');
+    var session = bridge.getCurrentSession();
+    params = copy(params || preset.params || (bridge.getSessionParams ? bridge.getSessionParams(session) : session && session.params) || {});
+    var prompts = preset.modules.map(function (mod, index) {
+      return { identifier: 'mychat_' + index, name: mod.name, content: moduleText(mod), marker: false,
+        role: mod.role || (mod.roleType === 'prefill' ? 'assistant' : 'system'), enabled: mod.enabled !== false,
+        xmlTag: mod.xmlTag, position: mod.position, depth: mod.depth,
+        injection_position: isNum(mod.position) ? mod.position : mod.position !== undefined ? (mod.position === 'at_depth' || mod.position === 'post_history' ? 1 : 0) : (mod.roleType === 'post_history' ? 1 : 0),
+        injection_depth: isNum(mod.depth) ? mod.depth : 4 };
+    });
+    return { name: preset.name, prompts: prompts,
+      prompt_order: [{ character_id: 100001, order: prompts.map(function (p) { return { identifier: p.identifier, enabled: p.enabled }; }) }],
+      temperature: params.temperature, top_p: params.topP, openai_max_tokens: params.maxTokens,
+      stream_openai: params.stream,
+      extensions: { regex_scripts: regexScripts(preset.regexRules) },
+      _mychat_ext: { format: 'mychat', version: 1, type: 'preset', preset: copy(preset), params: params } };
+  }
+
+  // 只携带会话角色元数据，不导出历史、记忆产出、输入草稿或渠道凭据。
+  var characterStrings = ['title', 'system', 'avatar', 'userAvatar', 'charName', 'userName', 'firstMessage',
+    'charDescription', 'charPersonality', 'charScenario', 'charMesExample', 'charSystemPrompt', 'charPostHistory'];
+  function characterMetadata(session) {
+    var result = {};
+    characterStrings.forEach(function (key) { if (typeof session[key] === 'string') result[key] = session[key]; });
+    ['alternateGreetings', 'regexRules', 'worldbookIds'].forEach(function (key) {
+      if (Array.isArray(session[key])) result[key] = copy(session[key]);
+    });
+    ['params', 'tavernVars'].forEach(function (key) { if (record(session[key])) result[key] = copy(session[key]); });
+    if (isNum(session.greetingIndex)) result.greetingIndex = session.greetingIndex;
+    if (typeof session.presetId === 'string' || session.presetId === null) result.presetId = session.presetId;
+    return result;
+  }
+
+  function validCharacter(meta) {
+    return record(meta) && characterStrings.every(function (key) { return meta[key] === undefined || typeof meta[key] === 'string'; }) &&
+      ['alternateGreetings', 'regexRules', 'worldbookIds'].every(function (key) { return meta[key] === undefined || Array.isArray(meta[key]); }) &&
+      (meta.regexRules === undefined || validRules(meta.regexRules)) &&
+      (meta.worldbookIds === undefined || meta.worldbookIds.every(function (id) { return typeof id === 'string'; })) &&
+      (meta.greetingIndex === undefined || isNum(meta.greetingIndex)) &&
+      (meta.alternateGreetings === undefined || meta.alternateGreetings.every(function (g) { return typeof g === 'string'; })) &&
+      ['params', 'tavernVars'].every(function (key) { return meta[key] === undefined || record(meta[key]); });
+  }
+
+  function standardBook(books) {
+    var entries = [];
+    books.forEach(function (book) {
+      (book.entries || []).forEach(function (e) {
+        entries.push({ id: entries.length, keys: copy(e.keys || []), secondary_keys: [], comment: e.name || '',
+          content: e.content || '', enabled: e.enabled !== false, constant: e.constant === true,
+          selective: false, insertion_order: entries.length, position: e.position === 'before_system' ? 'before_char' : 'after_char',
+          extensions: { position: e.position === 'at_depth' ? 4 : e.position === 'before_system' ? 0 : 1,
+            depth: e.depth, scan_depth: e.scanDepth } });
+      });
+    });
+    return { name: books.map(function (b) { return b.name; }).join(' / '), entries: entries };
+  }
+
+  function buildCharacterCard(source) {
+    var session = sessionSource(source);
+    var meta = characterMetadata(session);
+    var books = typeof bridge.getWorldbooks === 'function' ? bridge.getWorldbooks().filter(function (b) {
+      return (session.worldbookIds || []).indexOf(b.id) !== -1;
+    }) : [];
+    var data = { name: session.charName || session.title || '未命名角色', description: session.charDescription || '',
+      personality: session.charPersonality || '', scenario: session.charScenario || '', mes_example: session.charMesExample || '',
+      system_prompt: session.charSystemPrompt || session.system || '', post_history_instructions: session.charPostHistory || '',
+      first_mes: session.firstMessage || '', alternate_greetings: copy(session.alternateGreetings || []),
+      creator_notes: '', tags: [], creator: '', character_version: '',
+      extensions: { regex_scripts: regexScripts(session.regexRules) },
+      _mychat_ext: { format: 'mychat', version: 1, type: 'character', character: meta, worldbooks: copy(books) } };
+    if (session.presetId && typeof bridge.getPromptPresets === 'function') {
+      var boundPreset = bridge.getPromptPresets().find(function (p) { return p.id === session.presetId; });
+      if (boundPreset) data._mychat_ext.preset = copy(boundPreset);
+    }
+    if (books.length) data.character_book = standardBook(books);
+    return { spec: 'chara_card_v2', spec_version: '2.0', data: data };
+  }
+
+  function crc32(bytes) {
+    var crc = 0xffffffff;
+    for (var i = 0; i < bytes.length; i++) {
+      crc ^= bytes[i];
+      for (var bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  function bytesToBase64(bytes) {
+    var binary = '';
+    for (var i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    return window.btoa(binary);
+  }
+
+  function embedCharacterCard(buffer, card) {
+    var bytes = new Uint8Array(buffer);
+    if (!isPng(bytes)) throw new Error('头像不是有效 PNG');
+    var payload = new TextEncoder().encode('chara\0' + bytesToBase64(new TextEncoder().encode(JSON.stringify(card))));
+    var chunk = new Uint8Array(payload.length + 12);
+    var view = new DataView(chunk.buffer);
+    view.setUint32(0, payload.length);
+    chunk.set([116, 69, 88, 116], 4);
+    chunk.set(payload, 8);
+    view.setUint32(chunk.length - 4, crc32(chunk.subarray(4, chunk.length - 4)));
+    var parts = [bytes.subarray(0, 8)];
+    var pos = 8, ended = false;
+    while (pos + 12 <= bytes.length) {
+      var length = readUint32(bytes, pos), end = pos + 12 + length;
+      if (end > bytes.length) throw new Error('PNG 数据不完整');
+      var type = String.fromCharCode.apply(null, bytes.subarray(pos + 4, pos + 8));
+      if (type === 'IEND') { parts.push(chunk, bytes.subarray(pos, end)); ended = true; break; }
+      var data = bytes.subarray(pos + 8, end - 4), zero = data.indexOf(0);
+      var key = zero >= 0 ? new TextDecoder().decode(data.subarray(0, zero)) : '';
+      // 去掉旧卡块，避免读取优先级让旧 ccv3 覆盖新 chara。
+      if (!(/^(tEXt|zTXt|iTXt)$/.test(type) && /^(chara|ccv3)$/.test(key))) parts.push(bytes.subarray(pos, end));
+      pos = end;
+    }
+    if (!ended) throw new Error('PNG 缺少结束块');
+    return new Blob(parts, { type: 'image/png' });
+  }
+
+  async function buildCharacterPng(source) {
+    // 在等待头像期间冻结全部导出数据，切换会话不会串卡。
+    var session = copy(sessionSource(source)), card = buildCharacterCard(session);
+    var canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 512;
+    var ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('浏览器不支持图像导出');
+    var drawn = false;
+    if (session.avatar) {
+      try {
+        var img = await Promise.race([loadImage(session.avatar), new Promise(function (_, reject) {
+          setTimeout(function () { reject(new Error('头像读取超时')); }, 5000);
+        })]);
+        var side = Math.min(img.width, img.height);
+        ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, 512, 512);
+        canvas.toDataURL('image/png'); // 跨域画布会在这里失败，随后重建降级画布。
+        drawn = true;
+      } catch (err) { canvas.width = canvas.height = 512; ctx = canvas.getContext('2d'); }
+    }
+    if (!drawn) {
+      var gradient = ctx.createLinearGradient(0, 0, 512, 512);
+      gradient.addColorStop(0, '#52677f'); gradient.addColorStop(1, '#243347');
+      ctx.fillStyle = gradient; ctx.fillRect(0, 0, 512, 512);
+      ctx.fillStyle = '#ffffff'; ctx.font = '240px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(Array.from(card.data.name)[0] || '角', 256, 270);
+    }
+    return embedCharacterCard(base64ToBytes(canvas.toDataURL('image/png').split(',')[1]).buffer, card);
+  }
+
+  function download(blob, name) {
+    var url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = String(name || '导出').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_');
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    return blob;
+  }
+
+  function exportPreset(source, params) {
+    var data = buildPreset(source, params);
+    download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), data.name + '.json');
+    return data;
+  }
+
+  async function exportCharacterCard(source, format) {
+    var session = copy(sessionSource(source));
+    if (format === 'png') return download(await buildCharacterPng(session), (session.charName || session.title) + '.png');
+    var card = buildCharacterCard(session);
+    download(new Blob([JSON.stringify(card, null, 2)], { type: 'application/json' }), card.data.name + '.json');
+    return card;
+  }
+
+  function saveImportedPreset(preset, activate) {
+    preset = copy(preset);
+    preset.id = uid('preset');
+    var list = bridge.getPromptPresets();
+    list.push(preset);
+    var save = bridge.applyPresetWorkbenchChanges || bridge.savePromptPresets;
+    if (typeof save !== 'function' || save.call(bridge, list) === false) throw new Error('存储保存失败');
+    if (activate !== false && bridge.setCurrentPreset) bridge.setCurrentPreset(preset.id);
+    document.dispatchEvent(new CustomEvent('mychat-preset-imported', { detail: { presetId: preset.id } }));
+    return preset;
+  }
+
+  function restoreParams(data, ext) {
+    var params = {};
+    var source = record(ext && ext.params) ? ext.params : {};
+    ['temperature', 'topP', 'maxTokens', 'contextLimit'].forEach(function (key) {
+      if (isNum(source[key]) || source[key] === null) params[key] = source[key];
+    });
+    ['stream', 'realTime', 'dynamicContextByMemory'].forEach(function (key) {
+      if (typeof source[key] === 'boolean') params[key] = source[key];
+    });
+    // 酒馆 max_context 是 Token 窗口，不能误当作本应用按条计数的 contextLimit。
+    var map = { temperature: 'temperature', top_p: 'topP', openai_max_tokens: 'maxTokens', stream_openai: 'stream' };
+    Object.keys(map).forEach(function (key) {
+      var value = data[key];
+      if (params[map[key]] === undefined && (key === 'stream_openai' ? typeof value === 'boolean' : isNum(value) || value === null)) params[map[key]] = value;
+    });
+    var session = bridge.getCurrentSession && bridge.getCurrentSession();
+    if (session && Object.keys(params).length) {
+      var previous = session.params;
+      session.params = Object.assign({}, previous || {}, params);
+      if (!bridge.saveSession || bridge.saveSession(session, { background: true }) === false) {
+        session.params = previous; throw new Error('参数保存失败');
+      }
     }
   }
 
@@ -326,6 +637,12 @@
       return null;
     }
 
+    var cardExt = extension(data, 'character') || extension(card, 'character');
+    var meta = cardExt && validCharacter(cardExt.character) ? copy(cardExt.character) : null;
+    var exactBooks = meta && Array.isArray(cardExt.worldbooks) && cardExt.worldbooks.every(function (b) {
+      return record(b) && typeof b.id === 'string' && typeof b.name === 'string' && Array.isArray(b.entries) &&
+        b.entries.every(function (e) { return record(e) && typeof e.content === 'string'; });
+    }) ? copy(cardExt.worldbooks) : null;
     var name = pickString(data, ['name', 'char_name', 'charName']).trim();
     var description = pickString(data, ['description', 'char_persona', 'charPersona']);
     var personality = pickString(data, ['personality']);
@@ -381,16 +698,23 @@
       }
     }
     if (avatar) session.avatar = avatar;
+    if (meta) {
+      Object.assign(session, characterMetadata(meta));
+      // 外部 ID 不直接绑定本机已有世界书，只使用下面实际恢复的新 ID。
+      session.worldbookIds = [];
+      session.presetId = null;
+      if (validPreset(cardExt.preset)) session.presetId = saveImportedPreset(cardExt.preset, false).id;
+    }
 
     // 3. #1 楼开场白：直接写入消息数组（带 isGreeting 标识，便于后续切换备选开场白）
-    var greetingText = String(firstMes || '').trim();
+    var greetingText = meta && typeof meta.firstMessage === 'string' ? meta.firstMessage : String(firstMes || '').trim();
     if (greetingText && Array.isArray(session.messages)) {
       session.messages.length = 0;
       session.messages.push({
         role: 'assistant',
         content: greetingText,
         reasoning: '',
-        meta: { isGreeting: true, greetingIndex: 0 }
+        meta: { isGreeting: true, greetingIndex: meta && isNum(meta.greetingIndex) ? meta.greetingIndex : 0 }
       });
       session.firstMessage = greetingText;
     }
@@ -401,7 +725,17 @@
     var book = data.character_book && typeof data.character_book === 'object'
       ? data.character_book
       : null;
-    if (book && window.MyChatWorldbook && typeof window.MyChatWorldbook.importCharacterBook === 'function') {
+    if (exactBooks) {
+      if (exactBooks.length && (typeof bridge.getWorldbooks !== 'function' || typeof bridge.saveWorldbooks !== 'function')) {
+        throw new Error('缺少世界书桥接');
+      }
+      var existingBooks = exactBooks.length ? bridge.getWorldbooks() : [];
+      var bookIds = Object.create(null);
+      exactBooks.forEach(function (b) { var old = b.id; b.id = uid('wb'); bookIds[old] = b.id; });
+      if (exactBooks.length && bridge.saveWorldbooks(existingBooks.concat(exactBooks)) === false) throw new Error('世界书保存失败');
+      session.worldbookIds = (meta.worldbookIds || []).map(function (id) { return bookIds[id]; }).filter(Boolean);
+      wbCount = exactBooks.reduce(function (n, b) { return n + b.entries.length; }, 0);
+    } else if (book && window.MyChatWorldbook && typeof window.MyChatWorldbook.importCharacterBook === 'function') {
       try {
         wbId = window.MyChatWorldbook.importCharacterBook(book, '角色书 · ' + charName) || '';
         if (wbId) {
@@ -419,9 +753,9 @@
     }
 
     // 5. 专属正则：extensions.regex_scripts → session.regexRules（会话层）
-    var regexCount = 0;
+    var regexCount = meta && Array.isArray(meta.regexRules) ? meta.regexRules.length : 0;
     var scripts = getCardRegexScripts(data);
-    if (scripts.length && typeof bridge.convertTavernRegex === 'function') {
+    if (!(meta && Array.isArray(meta.regexRules)) && scripts.length && typeof bridge.convertTavernRegex === 'function') {
       var rules = [];
       scripts.forEach(function (script) {
         try {
@@ -530,13 +864,21 @@
       return null;
     }
 
+    var presetExt = extension(data, 'preset');
+    if (presetExt && validPreset(presetExt.preset)) {
+      var restored = saveImportedPreset(presetExt.preset);
+      restoreParams(data, presetExt);
+      toast('预设已恢复');
+      return restored;
+    }
+
     var prompts = Array.isArray(data.prompts) ? data.prompts : [];
     var order = pickBestOrder(data.prompt_order);
 
     // prompt_order 缺失时，退化为按 prompts 原始顺序处理
     if (!order.length) {
       order = prompts.map(function (item) {
-        return { identifier: item && item.identifier, enabled: true };
+        return { identifier: item && item.identifier, enabled: !item || item.enabled !== false };
       });
     }
     if (!order.length) {
@@ -572,16 +914,23 @@
       var name =
         (typeof prompt.name === 'string' && prompt.name.trim()) || identifier || '未命名模块';
       // 同名同内容只入一次，避免 prompt_order 重复项导致重复注入
-      var dedupeKey = name + '|' + content.length;
+      var dedupeKey = identifier;
       if (seen[dedupeKey]) return;
       seen[dedupeKey] = true;
 
+      var position = [0, 1, 'before_system', 'after_system', 'at_depth', 'post_history'].indexOf(prompt.position) !== -1 ? prompt.position :
+        ([0, 1].indexOf(prompt.injection_position) !== -1 ? prompt.injection_position : undefined);
+      var depth = isNum(prompt.depth) ? prompt.depth : prompt.injection_depth;
       modules.push({
         id: uid('mod'),
         name: name,
         content: content,
-        enabled: item.enabled !== false,
-        roleType: roleType,
+        enabled: typeof item.enabled === 'boolean' ? item.enabled : prompt.enabled !== false,
+        roleType: (position === 'post_history' || position === 'at_depth' || position === 1) && roleType === 'system' ? 'post_history' : roleType,
+        role: ['system', 'user', 'assistant'].indexOf(prompt.role) !== -1 ? prompt.role : (roleType === 'prefill' ? 'assistant' : 'system'),
+        xmlTag: typeof prompt.xmlTag === 'string' && /^[a-zA-Z0-9_\u3400-\u9fff-]+$/.test(prompt.xmlTag) ? prompt.xmlTag.toLowerCase() : undefined,
+        position: position,
+        depth: isNum(depth) ? Math.max(0, Math.min(999, Math.round(depth))) : undefined,
         keepPrefillInReply: false
       });
     });
@@ -599,6 +948,7 @@
           content: prefillText,
           enabled: true,
           roleType: 'prefill',
+          role: 'assistant',
           keepPrefillInReply: false
         });
       }
@@ -633,20 +983,8 @@
     // 去掉 .json 后缀，避免列表里出现文件名尾巴
     presetName = presetName.replace(/\.json$/i, '');
 
-    var presetList = typeof bridge.getPromptPresets === 'function' ? bridge.getPromptPresets() : [];
-    if (!Array.isArray(presetList)) presetList = [];
-
-    var preset = {
-      id: uid('preset'),
-      name: presetName,
-      modules: modules,
-      regexRules: regexRules
-    };
-    presetList.push(preset);
-    if (typeof bridge.savePromptPresets === 'function' && bridge.savePromptPresets(presetList) === false) {
-      throw new Error('存储保存失败');
-    }
-    if (typeof bridge.setCurrentPreset === 'function') bridge.setCurrentPreset(preset.id);
+    var preset = saveImportedPreset({ name: presetName, modules: modules, regexRules: regexRules });
+    restoreParams(data, null);
     if (window.MyChatRegex && typeof window.MyChatRegex.reload === 'function') {
       window.MyChatRegex.reload();
     }
@@ -900,6 +1238,37 @@
   /* ================= 接管按钮（捕获阶段优先，屏蔽 app.js 的旧逻辑） ================= */
 
   function bindButtons() {
+    var charTargetId = '';
+    // 从公开列表节点取得弹窗目标；不读取宿主的 charModalSessionId 私有状态。
+    document.addEventListener('click', function (event) {
+      var button = event.target.closest && event.target.closest('#session-list [data-role="char"]');
+      var row = button && button.closest('.session-item[data-id]');
+      if (row) charTargetId = row.getAttribute('data-id');
+    }, true);
+    var charModal = document.getElementById('session-char-modal');
+    if (charModal) new MutationObserver(function () {
+      if (!charModal.classList.contains('show')) charTargetId = '';
+    }).observe(charModal, { attributes: true, attributeFilter: ['class'] });
+    ['tp-export-btn', 'sc-export-json', 'sc-export-png'].forEach(function (id) {
+      var button = document.getElementById(id);
+      if (!button) return;
+      button.addEventListener('click', async function (event) {
+        event.preventDefault(); event.stopPropagation();
+        if (button.disabled) return;
+        button.disabled = true;
+        try {
+          if (id === 'tp-export-btn') {
+            var select = document.getElementById('top-preset-select');
+            exportPreset(select && select.value || undefined);
+          } else {
+            if (!charTargetId) throw new Error('请从会话列表打开角色设置');
+            await exportCharacterCard(charTargetId, id === 'sc-export-png' ? 'png' : 'json');
+          }
+          toast('已导出');
+        } catch (err) { toast(err.message || '导出失败'); }
+        finally { button.disabled = false; }
+      });
+    });
     // 角色卡：app.js 自带的 importCharcardFlow 不支持 zTXt 压缩块，
     // 这里在 document 捕获阶段拦截，阻止事件继续冒泡到按钮自身的监听器
     document.addEventListener(
@@ -970,6 +1339,13 @@
     // 直接把已解析的对象交给导入器（便于控制台调试 / 其他模块复用）
     importCharacterCard: importCharacterCard,
     importPreset: importTavernPreset,
+    buildPreset: buildPreset,
+    exportPreset: exportPreset,
+    buildCharacterCard: buildCharacterCard,
+    buildCharacterPng: buildCharacterPng,
+    exportCharacterCard: exportCharacterCard,
+    exportCharacterCardPng: function (sessionData) { return exportCharacterCard(sessionData, 'png'); },
+    embedCharacterCard: embedCharacterCard,
     parseTopLevelXmlBlocks: parseTopLevelXmlBlocks,
     normalizeOpeningGreeting: normalizeOpeningGreeting,
     importXmlPreset: importXmlPreset,

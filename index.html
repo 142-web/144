@@ -89,6 +89,7 @@
                 <button type="button" id="tp-new-btn" class="btn-mini">新建预设</button>
                 <button type="button" id="tp-rename-btn" class="btn-mini">重命名</button>
                 <button type="button" id="tp-delete-btn" class="btn-mini btn-mini-danger">删除</button>
+                <button type="button" id="tp-export-btn" class="btn-mini" title="导出预设 JSON" aria-label="导出预设 JSON"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 15V3m-4 4 4-4 4 4M4 16v5h16v-5"/></svg></button>
                 <!-- 双通道预设导入，由独立导入器接管 -->
                 <button type="button" id="tp-import-btn" class="btn-mini" title="导入预设" aria-haspopup="dialog"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/></svg><span>导入预设</span></button>
               </div>
@@ -127,6 +128,7 @@
         </div>
         <!-- 顶部右侧按钮组：主题切换 + 云同步状态 + 设置 -->
           <!-- 主题切换：浅色模式显示月亮，暗黑模式显示太阳（单色线条图标，随按钮文字色变化） -->
+          <button type="button" id="btn-export-tavern-chat" class="btn-icon-toggle" title="导出酒馆对话" aria-label="导出酒馆对话"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></button>
           <button type="button" id="theme-toggle-btn" class="btn-icon-toggle" data-toolbar-item="theme" title="切换浅色 / 暗黑主题"
             aria-label="切换浅色 / 暗黑主题">
             <svg class="icon-theme icon-theme-moon" viewBox="0 0 24 24" width="18" height="18" fill="none"
@@ -747,7 +749,7 @@
             <button type="button" id="wb-rename-btn" class="btn-mini">重命名</button>
             <button type="button" id="wb-delete-btn" class="btn-mini btn-mini-danger">删除</button>
             <button type="button" id="wb-import-btn" class="btn-mini">导入酒馆世界书 (.json)</button>
-            <button type="button" id="wb-export-btn" class="btn-mini">导出 (.json)</button>
+            <button type="button" id="wb-export-btn" class="btn-mini" title="导出酒馆世界书" aria-label="导出酒馆世界书"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></button>
             <input type="file" id="wb-import-file" accept=".json,application/json" hidden />
           </div>
         </div>
@@ -861,6 +863,8 @@
     <div class="modal-card session-char-card" role="dialog" aria-modal="true" aria-labelledby="session-char-title">
       <div class="preset-head">
         <h2 id="session-char-title" class="modal-title">角色与对话设置</h2>
+        <button type="button" id="sc-export-json" class="btn-mini" title="导出已保存角色 JSON" aria-label="导出已保存角色 JSON"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M8 3H4v18h16V7l-4-4H8m6 0v5h6M10 12l-3 3 3 3m4-6 3 3-3 3"/></svg></button>
+        <button type="button" id="sc-export-png" class="btn-mini" title="导出已保存角色 PNG" aria-label="导出已保存角色 PNG"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 7"/></svg></button>
         <button type="button" id="session-char-close" class="preset-close" aria-label="关闭">×</button>
       </div>
       <div class="session-char-body">

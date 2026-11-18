@@ -124,7 +124,7 @@
 
     var position = POSITIONS.indexOf(src.position) !== -1 ? src.position : 'at_depth';
 
-    return {
+    return Object.assign({}, src, {
       id: typeof src.id === 'string' && src.id ? src.id : uid('wbe') + '_' + idx,
       name:
         typeof src.name === 'string' && src.name.trim()
@@ -139,7 +139,7 @@
       position: position,
       depth: clampInt(src.depth, 0, 99, 1),
       enabled: src.enabled !== false
-    };
+    });
   }
 
   /**
@@ -162,14 +162,14 @@
         entries.push(normalizeEntry(item, i));
       });
     }
-    return {
+    return Object.assign({}, src, {
       id: typeof src.id === 'string' && src.id ? src.id : uid('wb') + '_' + idx,
       name:
         typeof src.name === 'string' && src.name.trim()
           ? src.name.trim()
           : '世界书 ' + (idx + 1),
       entries: entries
-    };
+    });
   }
 
   /**
@@ -194,7 +194,7 @@
     if (typeof bridge.saveWorldbooks === 'function') {
       // 隐藏的旧记忆库留作备份，不因普通世界书编辑而丢失。
       var legacy = bridge.getWorldbooks().filter(function (book) { return book.comment === 'mychat_memory_book'; });
-      bridge.saveWorldbooks(list.concat(legacy));
+      if (bridge.saveWorldbooks(list.concat(legacy)) === false) throw new Error('世界书保存失败');
     }
     updateToolboxLabel();
   }
@@ -272,7 +272,7 @@
     disable: '<path d="M5 12h14"/>',
     constant: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>',
     keyword: '<circle cx="8" cy="10" r="4"/><path d="m11 13 8 8m-4-4 3-3"/>',
-    export: '<path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/>',
+    export: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
     delete: '<path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/>'
   };
   function batchButton(action, label, icon) {
@@ -390,7 +390,7 @@
     if (!ids.size) return;
     if (action === 'export') {
       var selected = books.filter(function (book) { return ids.has(book.id); });
-      var url = URL.createObjectURL(new Blob([JSON.stringify(selected, null, 2)], { type: 'application/json;charset=utf-8' }));
+      var url = URL.createObjectURL(new Blob([JSON.stringify(selected.map(exportBookToTavern), null, 2)], { type: 'application/json;charset=utf-8' }));
       var link = document.createElement('a');
       link.href = url; link.download = '世界书合集.json';
       document.body.appendChild(link); link.click(); link.remove();
@@ -787,6 +787,23 @@
     renderAll();
   }
 
+  // 标准字段供酒馆消费，扩展副本保留本机全部字段，不改动源对象。
+  function exportBookToTavern(book) {
+    var entries = {};
+    (book.entries || []).forEach(function (entry, idx) {
+      entries[String(idx)] = {
+        uid: idx, key: (entry.keys || []).slice(),
+        keysecondary: Array.isArray(entry.keysecondary) ? entry.keysecondary.slice() : [],
+        comment: entry.name || entry.comment || '', content: entry.content || '',
+        constant: entry.constant === true, selective: entry.selective !== false,
+        order: idx, position: entry.position === 'before_system' ? 0 : entry.position === 'after_system' ? 1 : 4,
+        depth: entry.depth, scanDepth: entry.scanDepth,
+        disable: entry.enabled === false, enabled: entry.enabled !== false
+      };
+    });
+    return { name: book.name, entries: entries, _mychat_ext: { version: 1, type: 'worldbook', book: JSON.parse(JSON.stringify(book)) } };
+  }
+
   function exportBook() {
     var books = loadBooks();
     var book = getActiveBook(books);
@@ -794,29 +811,7 @@
       void window.showAppAlert('没有可导出的世界书');
       return;
     }
-    // 导出时额外带上酒馆兼容字段，方便在 SillyTavern 中重新导入
-    var entries = {};
-    book.entries.forEach(function (entry, idx) {
-      entries[String(idx)] = {
-        uid: idx,
-        comment: entry.name,
-        key: entry.constant ? [] : entry.keys.slice(),
-        keysecondary: [],
-        content: entry.content,
-        constant: entry.constant === true,
-        disable: entry.enabled === false,
-        scanDepth: entry.scanDepth,
-        depth: entry.depth,
-        position: entry.position === 'before_system' ? 0 : entry.position === 'after_system' ? 1 : 4,
-        selective: true
-      };
-    });
-    var data = {
-      name: book.name,
-      entries: entries,
-      // 同时保留一份本应用的原始结构，二次导入时不丢信息
-      mychat: { id: book.id, name: book.name, entries: book.entries }
-    };
+    var data = exportBookToTavern(book);
     var text = JSON.stringify(data, null, 2);
     var blob = new Blob([text], { type: 'application/json;charset=utf-8' });
     var url = URL.createObjectURL(blob);
@@ -915,8 +910,7 @@
 
     // 深度：extensions.depth ?? depth ?? 4（@Depth 生效时缺省 4，其余位置深度无意义）
     var depthSrc = ext.depth != null ? ext.depth : src.depth;
-    var depth = typeof depthSrc === 'number' && isFinite(depthSrc) ? depthSrc : 1;
-    if (position === 'at_depth' && !(depth > 0)) depth = 4;
+    var depth = typeof depthSrc === 'number' && isFinite(depthSrc) && depthSrc >= 0 ? depthSrc : (position === 'at_depth' ? 4 : 1);
 
     // 扫描深度：旧版 scanDepth，V3 为 extensions.scan_depth
     var scanSrc = src.scanDepth != null ? src.scanDepth : ext.scan_depth;
@@ -933,7 +927,7 @@
       src.disable === true || ext.disable === true || src.enabled === false || ext.enabled === false;
 
     return normalizeEntry(
-      {
+      Object.assign({}, src, {
         name: name,
         // 酒馆的 comment 就是词条标题，保留下来供 MVU initvar 识别
         comment: typeof src.comment === 'string' ? src.comment : name,
@@ -944,7 +938,7 @@
         position: position,
         depth: depth,
         enabled: !disabled
-      },
+      }),
       idx
     );
   }
@@ -954,11 +948,19 @@
    */
   function parseTavernJson(text) {
     var data = JSON.parse(text);
+    var nativeBook = data && data._mychat_ext && data._mychat_ext.type === 'worldbook' ? data._mychat_ext.book : data && data.mychat;
+    if (nativeBook && typeof nativeBook === 'object' && Array.isArray(nativeBook.entries)) {
+      return JSON.parse(JSON.stringify(nativeBook));
+    }
+    // 兼容旧批量导出的本机书目。
+    if (data && !Array.isArray(data) && Array.isArray(data.entries) && data.entries.every(function (entry) { return entry && typeof entry.id === 'string' && Array.isArray(entry.keys); })) {
+      return JSON.parse(JSON.stringify(data));
+    }
     var entriesRaw = data && typeof data === 'object' ? data.entries : null;
     if (!entriesRaw && Array.isArray(data)) entriesRaw = data;
 
     var rawList = collectTavernEntries(entriesRaw);
-    if (!rawList.length) {
+    if (!rawList.length && !entriesRaw) {
       throw new Error('未找到 entries 字段，可能不是世界书文件');
     }
     var list = rawList.map(function (item, idx) {
@@ -972,23 +974,28 @@
     return { name: name, entries: list };
   }
 
+  function parseWorldbooks(source) {
+    var data = typeof source === 'string' ? JSON.parse(source.replace(/^\uFEFF/, '')) : source;
+    var batch = Array.isArray(data) && data.every(function (item) { return item && item.entries != null; });
+    return (batch ? data : [data]).map(function (item) { return parseTavernJson(JSON.stringify(item)); });
+  }
+
   function importBookFile(file) {
     if (!file) return;
     var reader = new FileReader();
     reader.onload = async function () {
       try {
-        var parsed = parseTavernJson(String(reader.result || ''));
-        if (!parsed.entries.length) {
-          await window.showAppAlert('文件中没有词条');
-          return;
-        }
+        var imported = parseWorldbooks(String(reader.result || ''));
+        if (!imported.length) throw new Error('未找到世界书');
         var books = loadBooks();
-        var book = { id: uid('wb'), name: parsed.name, entries: parsed.entries };
-        books.push(book);
-        uiState.activeBookId = book.id;
+        imported.forEach(function (book) {
+          if (!book.id || books.some(function (existing) { return existing.id === book.id; })) book.id = uid('wb');
+          books.push(book);
+        });
+        uiState.activeBookId = imported[0].id;
         saveBooks(books);
         renderAll();
-        await window.showAppAlert('已导入 ' + book.entries.length + ' 条词条');
+        await window.showAppAlert('已导入 ' + imported.length + ' 本世界书');
       } catch (err) {
         await window.showAppAlert('导入失败：' + (err && err.message ? err.message : '文件格式不正确'));
       }
@@ -1548,6 +1555,8 @@
   // 对外暴露最小接口（核心云同步恢复后会调用 reload）
   window.MyChatWorldbook = {
     reload: reload,
+    exportBookToTavern: exportBookToTavern,
+    parseWorldbooks: parseWorldbooks,
     applyWorldbooksToMessages: applyWorldbooksToMessages,
     // 供角色卡导入器（modules/tavern-importer.js）一键写入角色书，返回新世界书 id
     importCharacterBook: importCharacterBook

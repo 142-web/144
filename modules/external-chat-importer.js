@@ -1,5 +1,5 @@
 /* 外部对话导入：本地纯解析，完全成功后通过宿主批量追加；不注册消息处理钩子。
- * 依赖 MyChat.appendExternalChats；不读取存储、不请求网络、不导入设置与附件。
+ * 依赖 MyChat 桥接；不直接读取存储、不请求网络。第三方保持原白名单，本机扩展恢复完整副本。
  */
 (function () {
   'use strict';
@@ -56,6 +56,62 @@
     if (!Array.isArray(list) || !list.length) fail('未找到对话');
     return list.map(chatboxSession);
   }
+  function clone(value) { return value === undefined ? undefined : JSON.parse(JSON.stringify(value)); }
+  function settingsSnapshot(session) {
+    var settings = clone(session);
+    ['id', 'messages', 'subChats', 'memoryData', 'activeSubChatId'].forEach(function (key) { delete settings[key]; });
+    return settings;
+  }
+  function exportSessionToTavernJsonl(session, subChat) {
+    if (!session || typeof session !== 'object') fail('未找到对话');
+    var subs = Array.isArray(session.subChats) ? session.subChats : [];
+    var selected = typeof subChat === 'string' ? subs.find(function (sub) { return sub.id === subChat; }) : subChat;
+    if (subChat && (!selected || subs.indexOf(selected) < 0)) fail('未找到子对话');
+    selected = selected || subs.find(function (sub) { return sub.id === session.activeSubChatId; }) || subs[0] || session;
+    if (!Array.isArray(selected.messages)) fail('消息格式错误');
+    var userName = text(session.userName) || '用户', characterName = text(session.charName) || '助手';
+    function date(value) { return Number.isFinite(value) ? new Date(value).toISOString() : new Date(0).toISOString(); }
+    var header = {
+      user_name: userName, character_name: characterName, create_date: date(session.createdAt || session.updatedAt),
+      chat_metadata: { _mychat_session_meta: { title: session.title || '', memoryData: clone(selected.memoryData), settingsSnapshot: settingsSnapshot(session) } },
+      _mychat_ext: { version: 1, type: 'session', session: clone(session), subChatId: selected === session ? null : selected.id }
+    };
+    return [JSON.stringify(header)].concat(selected.messages.map(function (msg, index) {
+      var messageId = msg.id == null ? 'msg_' + index : msg.id;
+      var extra = { reasoning: text(msg.reasoning) || text(msg.nativeReasoning), presetThinking: text(msg.presetThinking) || text(msg.tagReasoning), _mychat_msg_id: messageId };
+      var row = { name: text(msg.name) || (msg.role === 'user' ? userName : characterName), is_user: msg.role === 'user',
+        is_system: msg.is_system === true || msg.role === 'system', send_date: date(msg.timestamp), mes: text(msg.content),
+        extra: extra, presetThinking: extra.presetThinking, _mychat_msg_id: messageId,
+        _mychat_ext: { version: 1, type: 'message', message: clone(msg) } };
+      if (Array.isArray(msg.swipes) && msg.swipes.length) {
+        row.swipes = msg.swipes.map(function (swipe) { return typeof swipe === 'string' ? swipe : text(swipe.content); });
+        row.swipe_id = Number.isInteger(msg.swipeIndex) ? Math.max(0, Math.min(row.swipes.length - 1, msg.swipeIndex)) : 0;
+        row.swipe_info = msg.swipes.map(function (swipe) { return { send_date: date(swipe.timestamp), extra: { reasoning: text(swipe.reasoning) || text(swipe.nativeReasoning), presetThinking: text(swipe.presetThinking) || text(swipe.tagReasoning) } }; });
+      } else { row.swipes = [row.mes]; row.swipe_id = 0; }
+      return JSON.stringify(row);
+    })).join('\n') + '\n';
+  }
+  function downloadSession(session, subChat) {
+    try {
+      var source = exportSessionToTavernJsonl(session, subChat);
+      var url = URL.createObjectURL(new Blob([source], { type: 'application/x-ndjson;charset=utf-8' }));
+      var link = document.createElement('a'); link.href = url;
+      link.download = (text(session.title) || '对话').replace(/[\\/:*?"<>|]/g, '_') + '.jsonl';
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      return true;
+    } catch (err) { window.MyChat.showToast(err.message || '导出失败'); return false; }
+  }
+  function validateSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') fail('扩展副本格式错误');
+    var subs = Array.isArray(snapshot.subChats) && snapshot.subChats.length ? snapshot.subChats : [snapshot];
+    subs.forEach(function (sub) {
+      if (!sub || !Array.isArray(sub.messages)) fail('扩展分支格式错误');
+      sub.messages.forEach(function (msg) {
+        if (!msg || typeof msg.content !== 'string' || !['user', 'assistant', 'system'].includes(msg.role)) fail('扩展消息格式错误');
+      });
+    });
+  }
   function parseTavern(source, filename) {
     var value;
     if (typeof source === 'string') {
@@ -69,6 +125,18 @@
     var rows = Array.isArray(value) ? value : value && (value.messages || value.chat) || [value];
     if (!Array.isArray(rows)) fail('消息格式错误');
     var metadata = rows[0] && typeof rows[0].mes !== 'string' ? rows[0] : {};
+    var ext = metadata._mychat_ext;
+    var meta = metadata.chat_metadata && metadata.chat_metadata._mychat_session_meta;
+    if (ext && ext.type === 'session' && ext.version === 1) {
+      var snapshot = clone(ext.session);
+      validateSnapshot(snapshot);
+      if (!Array.isArray(snapshot.subChats) || !snapshot.subChats.length) {
+        snapshot.subChats = [{ title: '主对话', messages: clone(snapshot.messages), memoryData: clone(snapshot.memoryData) }];
+      }
+      snapshot.title = text(snapshot.title) || text(meta && meta.title) || '酒馆对话';
+      snapshot._mychatImportSnapshot = clone(snapshot);
+      return [snapshot];
+    }
     var messages = [];
     rows.forEach(function (m) {
       if (!m || typeof m !== 'object') fail('消息格式错误');
@@ -79,21 +147,41 @@
       // is_system 也可能表示隐藏历史，不能据此移除楼层或生成系统预设。
       var reasoning = text(m.extra && m.extra.reasoning);
       var msg = { role: m.is_user ? 'user' : 'assistant', content: m.mes, reasoning: reasoning, timestamp: time(m.send_date) };
+      var thinking = text(m.extra && m.extra.presetThinking) || text(m.presetThinking);
+      if (thinking) { msg.tagReasoning = thinking; msg.presetThinking = thinking; }
+      var messageId = m._mychat_msg_id || (m.extra && m.extra._mychat_msg_id);
+      if (messageId != null) msg.id = messageId;
       if (!m.is_user && Array.isArray(m.swipes) && m.swipes.length) {
         msg.swipes = m.swipes.map(function (v, i) {
           var info = m.swipe_info && m.swipe_info[i];
-          return { content: typeof v === 'string' ? v : text(v && (v.mes || v.content)), reasoning: text(info && info.extra && info.extra.reasoning) || (i === m.swipe_id ? reasoning : ''), timestamp: time(info && info.send_date) };
+          return { content: typeof v === 'string' ? v : text(v && (v.mes || v.content)), reasoning: text(info && info.extra && info.extra.reasoning) || (i === m.swipe_id ? reasoning : ''), tagReasoning: text(info && info.extra && info.extra.presetThinking) || (i === m.swipe_id ? thinking : ''), timestamp: time(info && info.send_date) };
         });
         msg.swipeIndex = Number.isInteger(m.swipe_id) ? Math.max(0, Math.min(m.swipes.length - 1, m.swipe_id)) : 0;
         msg.content = msg.swipes[msg.swipeIndex].content;
         msg.reasoning = msg.swipes[msg.swipeIndex].reasoning;
+        if (msg.swipes[msg.swipeIndex].tagReasoning) msg.tagReasoning = msg.swipes[msg.swipeIndex].tagReasoning;
       }
-      if (!msg.content.trim() && !msg.reasoning) return;
+      if (m._mychat_ext && m._mychat_ext.type === 'message' && m._mychat_ext.version === 1) {
+        var restored = clone(m._mychat_ext.message);
+        if (!restored || typeof restored.content !== 'string' || !['user', 'assistant', 'system'].includes(restored.role)) fail('扩展消息格式错误');
+        messages.push(restored); return;
+      }
+      if (!msg.content.trim() && !msg.reasoning && !msg.tagReasoning) return;
       messages.push(msg);
     });
-    if (!messages.length) fail('未找到对话');
+    if (!messages.length && !meta) fail('未找到对话');
     var characterName = text(metadata.character_name) || text(value && value.character_name);
-    return [{ title: characterName ? '导入对话 - ' + characterName : text(filename).replace(/\.[^.]+$/, '') || '酒馆对话', subChats: [{ title: '主对话', messages: messages }] }];
+    var draft = { title: characterName ? '导入对话 - ' + characterName : text(filename).replace(/\.[^.]+$/, '') || '酒馆对话', subChats: [{ title: '主对话', messages: messages }] };
+    if (meta && typeof meta === 'object') {
+      var restoredSession = Object.assign({}, clone(meta.settingsSnapshot || {}), { title: text(meta.title) || draft.title, subChats: [{ title: '主对话', messages: messages, memoryData: clone(meta.memoryData) }] });
+      validateSnapshot(restoredSession);
+      draft = restoredSession;
+      draft._mychatImportSnapshot = clone(restoredSession);
+    }
+    if (!draft._mychatImportSnapshot && rows.some(function (row) {
+      return row && (row._mychat_ext || row._mychat_msg_id != null || row.presetThinking || (row.extra && (row.extra.presetThinking || row.extra._mychat_msg_id != null)));
+    })) draft._mychatImportSnapshot = clone(draft);
+    return [draft];
   }
   function crc32(bytes) {
     var crc = -1;
@@ -192,6 +280,7 @@
         if (!obj || typeof obj !== 'object') continue;
         if (Array.isArray(obj.prompts)) { preset = obj; break; }
         Object.keys(obj).forEach(function (key) {
+          if (key === '_mychat_ext' || key === '_mychat_session_meta') return;
           if (obj[key] && typeof obj[key] === 'object') pending.push(obj[key]);
         });
       }
@@ -203,11 +292,47 @@
       }
       drafts = parseTavern(source, file.name);
     } else drafts = await parseFile(file, format);
-    return (bridge || window.MyChat).appendExternalChats(drafts);
+    var host = bridge || window.MyChat;
+    // 宿主只负责白名单追加与全局唯一 ID；扩展数据只写新建对象，绝不覆盖已有会话。
+    var safeDrafts = drafts.map(function (draft) {
+      if (!draft._mychatImportSnapshot) return draft;
+      return { title: draft.title, subChats: draft.subChats.map(function (sub) { return { title: sub.title, messages: sub.messages.filter(function (msg) { return msg.role !== 'system'; }) }; }) };
+    });
+    var result = host.appendExternalChats(safeDrafts);
+    drafts.forEach(function (draft, index) {
+      if (!draft._mychatImportSnapshot) return;
+      var live = host.getSessionById(result.ids[index]);
+      if (!live) fail('新对话恢复失败');
+      var before = clone(live), restored = clone(draft._mychatImportSnapshot);
+      var activeIndex = (restored.subChats || []).findIndex(function (sub) { return sub.id === restored.activeSubChatId; });
+      restored.id = live.id;
+      restored.subChats.forEach(function (sub, i) { sub.id = live.subChats[i].id; });
+      restored.activeSubChatId = restored.subChats[Math.max(0, activeIndex)].id;
+      var active = restored.subChats[Math.max(0, activeIndex)];
+      restored.messages = active.messages;
+      if (active.memoryData !== undefined) restored.memoryData = active.memoryData;
+      Object.assign(live, restored);
+      // appendExternalChats 已更新时间戳并安排同步；补全时不再次改写来源会话时间。
+      try {
+        if (host.saveSession(live, { background: true, silent: true }) === false) fail('存储保存失败');
+      } catch (error) {
+        var baseActive = before.subChats && before.subChats.find(function (sub) { return sub.id === before.activeSubChatId; });
+        if (baseActive) {
+          before.messages = baseActive.messages;
+          if (baseActive.memoryData !== undefined) before.memoryData = baseActive.memoryData;
+        }
+        Object.keys(live).forEach(function (key) { delete live[key]; }); Object.assign(live, before);
+        fail('扩展保存失败，已保留基础对话');
+      }
+    });
+    return result;
   }
-  var api = { parseChatbox: parseChatbox, parseTavern: parseTavern, parseZip: parseZip, parseFile: parseFile, importFile: importFile };
+  var api = { parseChatbox: parseChatbox, parseTavern: parseTavern, parseZip: parseZip, parseFile: parseFile, importFile: importFile,
+    exportSessionToTavernJsonl: exportSessionToTavernJsonl, downloadSession: downloadSession };
   window.MyChatExternalImporter = api;
   function init() {
+    var exportButton = document.getElementById('btn-export-tavern-chat');
+    if (exportButton) exportButton.addEventListener('click', function () { downloadSession(window.MyChat.getCurrentSession()); });
     var button = document.getElementById('btn-import-external-chat');
     if (!button || !window.MyChat) return;
     var modal = document.createElement('div');
