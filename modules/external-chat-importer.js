@@ -96,7 +96,10 @@
       var source = exportSessionToTavernJsonl(session, subChat);
       var url = URL.createObjectURL(new Blob([source], { type: 'application/x-ndjson;charset=utf-8' }));
       var link = document.createElement('a'); link.href = url;
-      link.download = (text(session.title) || '对话').replace(/[\\/:*?"<>|]/g, '_') + '.jsonl';
+      var subs = Array.isArray(session.subChats) ? session.subChats : [];
+      var selected = typeof subChat === 'string' ? subs.find(function (sub) { return sub.id === subChat; }) : subChat;
+      selected = selected || subs.find(function (sub) { return sub.id === session.activeSubChatId; }) || subs[0];
+      link.download = ((text(session.title) || '对话') + '_' + (selected && text(selected.title) || '主对话')).replace(/[\\/:*?"<>|]/g, '_') + '.jsonl';
       document.body.appendChild(link); link.click(); link.remove();
       setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
       return true;
@@ -331,8 +334,6 @@
     exportSessionToTavernJsonl: exportSessionToTavernJsonl, downloadSession: downloadSession };
   window.MyChatExternalImporter = api;
   function init() {
-    var exportButton = document.getElementById('btn-export-tavern-chat');
-    if (exportButton) exportButton.addEventListener('click', function () { downloadSession(window.MyChat.getCurrentSession()); });
     var button = document.getElementById('btn-import-external-chat');
     if (!button || !window.MyChat) return;
     var modal = document.createElement('div');

@@ -272,7 +272,7 @@
     disable: '<path d="M5 12h14"/>',
     constant: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>',
     keyword: '<circle cx="8" cy="10" r="4"/><path d="m11 13 8 8m-4-4 3-3"/>',
-    export: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
+    export: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
     delete: '<path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/>'
   };
   function batchButton(action, label, icon) {

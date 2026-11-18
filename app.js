@@ -4351,13 +4351,15 @@
 
     var exportBtn = document.createElement('button');
     exportBtn.type = 'button';
-    exportBtn.className = 'btn-session-icon btn-export-session';
-    exportBtn.title = '导出酒馆对话';
+    exportBtn.className = 'btn-session-icon btn-export-character';
+    exportBtn.title = '导出酒馆角色卡 (.png)';
     exportBtn.setAttribute('aria-label', exportBtn.title);
-    exportBtn.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>';
-    exportBtn.addEventListener('click', function (event) {
+    exportBtn.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>';
+    exportBtn.addEventListener('click', async function (event) {
       event.preventDefault(); event.stopPropagation();
-      if (window.MyChatExternalImporter) window.MyChatExternalImporter.downloadSession(window.MyChat.getSessionById(session.id));
+      if (!window.MyChatTavern) return showToast('导出暂不可用');
+      try { await window.MyChatTavern.exportCharacterCardPng(window.MyChat.getSessionById(session.id)); }
+      catch (err) { showToast(err.message || '角色卡导出失败'); }
     });
     actions.appendChild(exportBtn);
     actions.appendChild(pinBtn);
@@ -10100,6 +10102,17 @@
         deleteSubChat(sub.id);
       });
 
+      var exportBtn = document.createElement('button');
+      exportBtn.type = 'button';
+      exportBtn.className = 'btn-mini btn-export-subchat';
+      exportBtn.title = '导出对话 (.jsonl)';
+      exportBtn.setAttribute('aria-label', exportBtn.title);
+      exportBtn.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>';
+      exportBtn.addEventListener('click', function () {
+        if (window.MyChatExternalImporter) window.MyChatExternalImporter.downloadSession(session, sub.id);
+        else showToast('导出暂不可用');
+      });
+      actions.appendChild(exportBtn);
       actions.appendChild(switchBtn);
       actions.appendChild(renameBtn);
       actions.appendChild(delBtn);

@@ -67,7 +67,7 @@
     paste: 'M9 5H5v16h14V5h-4M9 3h6v4H9z', check: 'm4 12 5 5L20 6',
     snapshot: 'M12 8v5l3 2M3 11a9 9 0 1 1 2 7M3 4v7h7',
     plus: 'M12 5v14M5 12h14',
-    export: 'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5'
+    export: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12'
   };
   function el(tag, cls, text) {
     var node = document.createElement(tag);
@@ -622,34 +622,40 @@
     return text.trim();
   }
   function xmlShell(text, tag) { return '<' + tag + '>\n' + xmlBody(text, tag) + '\n</' + tag + '>'; }
+  function normalizeMetadataHeads(text, left) {
+    var names = { author: '作者', version: '版本', language: '语言', description: '核心描述', name: '名称', gender: '性别', age: '年龄', personality: '性格特征' };
+    return text.replace(/^([\t ]*[-*+][\t ]+)(Author|Version|Language|Description|Name|Gender|Age|Personality)[\t ]*[:：][\t ]*/gim, function (all, prefix, key) {
+      var name = names[key.toLowerCase()];
+      return new RegExp('^[\\t ]*[-*+][\\t ]+' + name + '[\\t ]*[:：]', 'm').test(left) ? prefix + name + '：' : all;
+    });
+  }
   function autoMatchModules(preset, blocks) {
-    var groups = new Map(), current = null, pending = [];
+    var groups = new Map(), pending = [];
     blocks.forEach(function (block) {
       var module = preset.modules.find(function (m) { return m.contentType !== 'wordlist' && String(m.xmlTag || '').toLowerCase() === block.tagName; }) ||
         preset.modules.find(function (m) { return m.contentType !== 'wordlist' && !m.xmlTag && xmlModuleNames[block.tagName] === m.name; });
-      // 未知块只追加到最近命中项；前置块暂存到首个命中项，不做散句相似度回填。
-      if (!module) { (current ? current.appended : pending).push(block.raw); return; }
+      // 未命中块保留完整壳，统一在最后一张卡正文比对结束后追加。
+      if (!module) { pending.push(block.raw); return; }
       var entry = groups.get(module.id);
       if (entry) entry.right += '\n\n' + block.innerContent.trim();
       else {
         entry = { tag: block.tagName, right: block.innerContent.trim(), appended: [] };
         groups.set(module.id, entry);
       }
-      if (pending.length) { entry.appended.push.apply(entry.appended, pending); pending = []; }
-      current = entry;
     });
     // 全部未知时也不丢稿：原模块不变，完整块追加到首个可用文本模块。
-    if (pending.length) {
+    if (pending.length && !groups.size) {
       var first = preset.modules.find(function (m) { return m.contentType !== 'wordlist'; });
-      if (first) groups.set(first.id, { right: first.content || '', appended: pending });
+      if (first) groups.set(first.id, { right: first.content || '', appended: [] });
     }
-    return preset.modules.filter(function (m) { return groups.has(m.id); }).map(function (m) {
+    var matched = preset.modules.filter(function (m) { return groups.has(m.id); });
+    return matched.map(function (m, index) {
       var entry = groups.get(m.id), content = m.content || '';
       var wrapped = entry.tag && new RegExp('^\\s*<' + entry.tag + '>', 'i').test(content);
       return { presetId: preset.id, moduleId: m.id, original: JSON.stringify(m), xmlTag: entry.tag,
-        bareXml: entry.tag && !wrapped, appended: entry.appended,
-        left: entry.tag && !wrapped ? '<' + entry.tag + '>\n' + content + '\n</' + entry.tag + '>' : content,
-        right: entry.tag ? xmlShell(entry.right, entry.tag) : entry.right, name: m.name || '未命名模块' };
+        bareXml: entry.tag && !wrapped, appended: index === matched.length - 1 ? pending : [],
+        left: entry.tag ? xmlBody(content, entry.tag).trim() : content,
+        right: entry.tag ? normalizeMetadataHeads(entry.right.trim(), xmlBody(content, entry.tag)) : entry.right, name: m.name || '未命名模块' };
     });
   }
   function matchPasted(preset, pasted) {
@@ -766,6 +772,8 @@
       appendPart(group, 'del', oldPart); appendPart(group, 'add', newPart);
       if (group !== row) row.appendChild(group);
     }
+    // 标签壳只作固定包裹，绝不进入正文逐字比对流。
+    if (task.xmlTag) editor.appendChild(el('span', 'pw-xml-shell', '<' + task.xmlTag + '>\n'));
     result.rows.forEach(function (r, index) {
       // 连续的纯增删段也属于同一冲突，兼容低相似度与快速兜底。
       if ((r.kind === 'del' || r.kind === 'add') && index > 0 && /^(del|add)$/.test(result.rows[index - 1].kind)) return;
@@ -786,6 +794,8 @@
       else appendChange(row, r.left, r.right);
       editor.appendChild(row);
     });
+    if (task.xmlTag) editor.appendChild(el('span', 'pw-xml-shell', '\n</' + task.xmlTag + '>'));
+    editor.querySelectorAll('.pw-xml-shell').forEach(function (node) { node.contentEditable = 'false'; });
     // 附加块独立于正文 Diff，保证原文不被重算、整块标签及正文统一标绿。
     (task.appended || []).forEach(function (text) {
       var row = el('span', 'pw-diff-row pw-add');
@@ -868,6 +878,7 @@
       try { tavern.exportPreset(preset.id); } catch (err) { notify('预设导出失败'); }
     });
     exportButton.classList.add('pw-export-preset');
+    exportButton.appendChild(el('span', '', '导出预设'));
     headActions.append(exportButton, undoButton, redoButton, iconButton('close', '关闭', function () { dialog.close(); }));
     head.append(modes, headActions); dialog.appendChild(head);
     fusionBar = el('div', 'pw-bar pw-fusion-bar');
