@@ -2675,6 +2675,8 @@ body {
   z-index: 31;
   width: 260px;
   max-width: calc(100vw - 24px);
+  white-space: normal;
+  box-sizing: border-box;
   max-height: 60vh;
   overflow-y: auto;
   padding: 10px 12px 12px;
@@ -2699,6 +2701,10 @@ body {
 }
 
 .qp-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: normal;
+  word-break: break-word;
   color: var(--text);
   font-size: 12.5px;
   font-weight: 700;

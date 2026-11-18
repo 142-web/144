@@ -1218,8 +1218,8 @@
       return currentId;
     },
     // 当前会话的有效参数（含 realTime 开关）与全局默认参数
-    getSessionParams: function (session) {
-      return getSessionParams(session || getCurrentSession());
+    getSessionParams: function (session, targetSubChat) {
+      return getSessionParams(session || getCurrentSession(), targetSubChat);
     },
     getGlobalChatParams: getGlobalChatParams,
     previewMainChatPayload: function () {
@@ -1517,8 +1517,8 @@
     return Object.keys(meta).length > 0 ? meta : null;
   }
 
-  // === [ANCHOR: CHAT_PARAMS] 双层对话参数（全局默认 + 单会话独立） ===
-  /* ================= 对话参数：全局默认与单会话独立 ================= */
+  // === [ANCHOR: CHAT_PARAMS] 对话参数（全局默认 + 子对话独立，主对话兼容镜像） ===
+  /* ================= 对话参数：全局默认与子对话独立 ================= */
 
   // 标准参数字段：null 表示「留空不发送 / 不截断」，stream / realTime 默认开启
   var DEFAULT_CHAT_PARAMS = {
@@ -1624,15 +1624,17 @@
   }
 
   /**
-   * 取某个会话的独立参数（彻底固化，绝不被全局默认参数覆盖）：
-   * 1. 传入有效会话但尚无 params 时：当场深拷贝全局默认并持久化；
-   * 2. params 已存在时：直接返回会话自身的值（null 就保持 null）。
+   * 读取目标子对话的独立参数，未指定目标时取当前激活项。
+   * 旧子对话首次读取从会话兼容参数（缺失则全局默认）深拷贝并落盘；
+   * 已有参数绝不再跟随主对话或全局默认变化。
    */
-  function getSessionParams(session) {
+  function getSessionParams(session, targetSubChat) {
     if (!session || typeof session !== 'object') return getGlobalChatParams();
+    var sub = targetSubChat || getActiveSubChat(session);
+    if (!sub) return cloneChatParams(session.params || getGlobalChatParams());
 
-    if (!session.params || typeof session.params !== 'object') {
-      session.params = getGlobalChatParams();
+    if (!sub.params || typeof sub.params !== 'object') {
+      sub.params = cloneChatParams(session.params || getGlobalChatParams());
       persistSessions();
       if (!applyingCloudData && !isBooting) {
         touchLastModified();
@@ -1640,15 +1642,23 @@
       }
     }
 
-    return cloneChatParams(session.params);
+    return cloneChatParams(sub.params);
   }
 
   /**
-   * 把参数写入当前会话的独立 params（绝不反向污染全局默认参数）
+   * 只保存目标子对话参数；首个子对话另写独立兼容镜像，不污染其他分区。
    */
-  function saveSessionParams(session, params) {
+  function saveSessionParams(session, params, targetSubChat) {
     if (!session) return;
-    session.params = cloneChatParams(params);
+    var sub = targetSubChat || getActiveSubChat(session);
+    if (!sub) return;
+    // 修改主对话镜像之前，先固化所有旧子对话的历史参数。
+    (session.subChats || []).forEach(function (item) {
+      if (!item.params || typeof item.params !== 'object') item.params = cloneChatParams(session.params || getGlobalChatParams());
+    });
+    sub.params = cloneChatParams(params);
+    if (session.subChats && session.subChats[0] === sub) session.params = cloneChatParams(params);
+    sub.updatedAt = Date.now();
     session.updatedAt = Date.now();
     persistSessions();
     refreshMemoryContext();
@@ -1662,7 +1672,7 @@
    * 判断会话参数是否已偏离全局默认（用于按钮上的「已定制」提示）
    */
   function isSessionParamsCustomized(session) {
-    if (!session || !session.params || typeof session.params !== 'object') return false;
+    if (!session) return false;
     var current = getSessionParams(session);
     var base = getGlobalChatParams();
     return (
@@ -3585,7 +3595,7 @@
    * 内部对话（子对话 / 分支）结构兜底与同步（幂等）
    * - 会话缺少 subChats 时自动补建一个「主对话」，并把原 messages 收进去
    * - 始终把当前激活子对话的 messages 暴露为 session.messages（渲染 / 发送逻辑无需改动）
-   * 注意：窗口参数（params）与预设（presetId）由全部子对话共享，不在这里复制
+   * 注意：params 按子对话独立保存；预设（presetId）仍由会话共享。
    * @param {object} session 会话对象
    * @returns {array} 该会话的 subChats 列表
    */
@@ -5435,7 +5445,13 @@
     branchMemory.overviewEnabled = false;
     branchMemory.overviewEntry.enabled = false;
 
+    var inheritedParams = getSessionParams(session, getActiveSubChat(session));
+    var inheritedMemoryMeta = JSON.parse(JSON.stringify(sourceSub.memoryMeta || session.memoryMeta || {}));
+    inheritedMemoryMeta.autoSummary = false;
+    inheritedMemoryMeta.recallBeforeSend = false;
     var newSub = {
+      params: cloneChatParams(inheritedParams),
+      memoryMeta: inheritedMemoryMeta,
       id: genSubChatId(),
       title: '分支 · 自 #' + floorNum + ' 楼',
       updatedAt: Date.now(),
@@ -7397,12 +7413,12 @@
   }
 
   /**
-   * 把当前会话参数恢复为全局默认（仍然写入本会话，不修改全局）
+   * 仅把当前激活子对话参数恢复为全局默认，不修改其他子对话或全局。
    */
   function resetQuickParams() {
     var session = getCurrentSession();
     if (!session) return;
-    saveSessionParams(session, getGlobalChatParams());
+    saveSessionParams(session, getGlobalChatParams(), getActiveSubChat(session));
     refreshQuickParamsPanel();
   }
 
@@ -10151,7 +10167,14 @@
       if (isFinite(num) && num > maxNum) maxNum = num;
     });
 
+    var sourceSub = getActiveSubChat(session);
+    var inheritedParams = getSessionParams(session, sourceSub);
+    var inheritedMemoryMeta = JSON.parse(JSON.stringify(sourceSub.memoryMeta || session.memoryMeta || {}));
+    inheritedMemoryMeta.autoSummary = false;
+    inheritedMemoryMeta.recallBeforeSend = false;
     var newSub = {
+      params: cloneChatParams(inheritedParams),
+      memoryMeta: inheritedMemoryMeta,
       id: genSubChatId(),
       title: '新对话 ' + (maxNum + 1),
       updatedAt: Date.now(),
@@ -10353,7 +10376,7 @@
       return sub.id === (targetSubChatId || macroSession.activeSubChatId);
     }) : macroSession;
     var cursor = Number(owner && owner.memoryData && owner.memoryData.summarizedFloorCursor || summarizedFloorCursor || 0);
-    var dynamic = !!(macroSession && getSessionParams(macroSession).dynamicContextByMemory && cursor > 0);
+    var dynamic = !!(macroSession && getSessionParams(macroSession, owner).dynamicContextByMemory && cursor > 0);
     var result = [];
     source.forEach(function (msg, idx) {
       if (!msg) return;
@@ -10732,8 +10755,9 @@
     var activeProvider = target.provider;
     var activeModel = target.model;
 
-    // 取本会话的有效参数（未定制的会话自动继承全局默认）
-    var params = getSessionParams(session);
+    // 精确读取冻结目标子对话，后台生成不跟随界面切换。
+    var targetSubChat = (session.subChats || []).find(function (sub) { return sub.id === targetSubChatId; });
+    var params = getSessionParams(session, targetSubChat);
     var isStreamMode = params.stream !== false;
 
     // 本次请求的上下文截止楼层：中间楼层重答时绝不把后续楼层发给 API

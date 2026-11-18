@@ -14,7 +14,7 @@
   <title>MyChat</title>
   <!-- 代码高亮深色主题（hljs 官方 atom-one-dark 配色，国内高速镜像） -->
   <link rel="stylesheet" href="https://cdn.staticfile.net/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
-  <link rel="stylesheet" href="style.css?v=20261118_44" />
+  <link rel="stylesheet" href="style.css?v=20261119_49" />
 </head>
 
 <body>
@@ -288,7 +288,7 @@
             <div id="quick-params-panel" class="quick-params-panel" role="dialog"
               aria-label="当前对话参数" hidden>
               <div class="qp-head">
-                <span class="qp-title">当前对话参数（仅对本会话生效）</span>
+                <span class="qp-title">当前对话参数（本子对话独立）</span>
                 <button type="button" id="qp-reset-btn" class="qp-reset-btn"
                   title="把本会话参数恢复为全局默认">重置为默认</button>
               </div>
@@ -1029,7 +1029,7 @@
     <footer><button type="button" class="preset-import-icon" data-preset-import-close title="取消" aria-label="取消"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button><button type="button" id="xml-preset-submit" class="preset-import-icon" title="解析并创建中文模块预设" aria-label="解析并创建中文模块预设"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg></button></footer>
   </dialog>
 
-  <script src="app.js?v=20261119_46"></script>
+  <script src="app.js?v=20261119_49"></script>
   <!-- 抓包基础设施：宿主创建后立即可用，早于记忆请求模块 -->
   <script src="modules/debug-inspector.js?v=20260405_21"></script>
   <script src="modules/task-hud.js?v=20260405_21"></script>
@@ -1047,7 +1047,7 @@
   <script src="modules/tavern-macros.js?v=20260405_21"></script>
   <script src="modules/worldbook.js?v=20261118_44"></script>
   <!-- 记忆总结与 Token 统计：实时 Token 估算 + 世界书二级编号索引记忆库 + 小 AI 检索召回 -->
-  <script src="modules/memory-summary.js?v=20261118_44"></script>
+  <script src="modules/memory-summary.js?v=20261119_49"></script>
   <!-- 三层正则引擎：全局 / 预设 / 会话正则统一管理，接入 beforeSend / onReceive / onRender 阀门 -->
   <script src="modules/regex-engine.js?v=20260405_21"></script>
   <!-- 酒馆导入器：PNG（tEXt / zTXt / iTXt）角色卡解析 + 角色卡 / 酒馆预设一键导入 -->

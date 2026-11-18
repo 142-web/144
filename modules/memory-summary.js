@@ -13,7 +13,7 @@
  *  设计铁律：
  *   - 只用 window.MyChat 桥接器读写数据，绝不触碰 app.js 私有变量；
  *   - 通过只读虚拟世界书接入触发引擎，不保存至全局世界书；
- *   - 配置在 session.memoryMeta，内容与快照在 subChat.memoryData，随会话同步；
+ *   - 配置在 subChat.memoryMeta，内容与快照在 subChat.memoryData，随会话同步；
  *   - 不依赖任何外部库 / ES Module，双击 index.html（file://）即可运行。
  * =================================================================== */
 (function () {
@@ -113,10 +113,13 @@
 
   /* ================= 会话记忆元数据 ================= */
 
-  function getMeta(session) {
-    if (!session || typeof session !== 'object') return Object.assign({}, DEFAULT_META);
-    if (!session.memoryMeta || typeof session.memoryMeta !== 'object') session.memoryMeta = {};
-    var m = session.memoryMeta;
+  function getMeta(session, targetOwner) {
+    if (!session || typeof session !== 'object') return deepCopy(DEFAULT_META);
+    var owner = targetOwner || memoryOwner(session);
+    if (!owner.memoryMeta || typeof owner.memoryMeta !== 'object') {
+      owner.memoryMeta = deepCopy(session.memoryMeta || DEFAULT_META);
+    }
+    var m = owner.memoryMeta;
     Object.keys(DEFAULT_META).forEach(function (key) {
       if (m[key] === undefined) m[key] = DEFAULT_META[key];
     });
@@ -133,7 +136,6 @@
     delete m.autoSummarize;
     delete m.enableRecall;
     delete m.keepRecentCount;
-    var owner = memoryOwner(session);
     m.memoryMode = normalizeMemoryMode(owner && owner.memoryData && owner.memoryData.memoryState
       ? owner.memoryData.memoryState.mode : m.memoryMode);
     var promptWasCleaned = false;
@@ -175,7 +177,7 @@
     try {
       (session.subChats && session.subChats.length ? session.subChats : [session]).forEach(function (owner) {
         if (owner.memoryData) {
-          ensureMemoryStateSynced(owner.memoryData, owner.memoryData.memoryState && owner.memoryData.memoryState.mode || getMeta(session).memoryMode);
+          ensureMemoryStateSynced(owner.memoryData, owner.memoryData.memoryState && owner.memoryData.memoryState.mode || getMeta(session, owner).memoryMode);
           compactMemorySnapshots(owner.memoryData);
         }
       });
@@ -548,7 +550,7 @@
   function getMemoryData(session, targetOwner) {
     var owner = targetOwner || memoryOwner(session);
     if (!owner) return createMemoryData();
-    if (!owner.memoryData || typeof owner.memoryData !== 'object') owner.memoryData = createMemoryData(getMeta(session).memoryMode);
+    if (!owner.memoryData || typeof owner.memoryData !== 'object') owner.memoryData = createMemoryData(getMeta(session, owner).memoryMode);
     var data = owner.memoryData;
     if (!data.overviewEntry) data.overviewEntry = createMemoryData().overviewEntry;
     if (typeof data.enabled !== 'boolean') data.enabled = false;
@@ -564,7 +566,7 @@
     data.lastRecalledEventIds = Array.isArray(data.lastRecalledEventIds) ? data.lastRecalledEventIds.filter(function (id) {
       return typeof id === 'string';
     }) : [];
-    ensureMemoryStateSynced(data, data.memoryState && data.memoryState.mode || getMeta(session).memoryMode);
+    ensureMemoryStateSynced(data, data.memoryState && data.memoryState.mode || getMeta(session, owner).memoryMode);
     return compactMemorySnapshots(data);
   }
 
@@ -588,7 +590,7 @@
     var owner = targetOwner || memoryOwner(session);
     var data = owner && owner.memoryData;
     if (!data) return null;
-    ensureMemoryStateSynced(data, data.memoryState && data.memoryState.mode || getMeta(session).memoryMode);
+    ensureMemoryStateSynced(data, data.memoryState && data.memoryState.mode || getMeta(session, owner).memoryMode);
     var entries = [data.overviewEntry].concat(data.eventEntries || []).filter(function (entry) {
       return entry && typeof entry.content === 'string' && entry.content.trim();
     }).map(function (entry, idx) {
@@ -674,8 +676,8 @@
 
   /* ================= 模型请求（非流式，供总结 / 检索使用） ================= */
 
-  function resolveMemoryTarget(session) {
-    var meta = getMeta(session);
+  function resolveMemoryTarget(session, targetOwner) {
+    var meta = getMeta(session, targetOwner || memoryOwner(session));
     if (meta.targetMode === 'custom' && meta.targetProviderId && meta.targetModelId) {
       var custom = typeof bridge.resolveTarget === 'function'
         ? bridge.resolveTarget(meta.targetProviderId, meta.targetModelId)
@@ -1071,7 +1073,7 @@
       key: channelKey(session.id, owner === session ? '' : owner.id),
       name: (session.title || session.charName || '未命名会话') +
         (owner !== session ? ' / ' + (owner.title || owner.id) : ''),
-      target: resolveMemoryTarget(session), meta: Object.assign({}, getMeta(session)) };
+      target: resolveMemoryTarget(session, owner), meta: deepCopy(getMeta(session, owner)) };
   }
 
   function assertTarget(ctx) {
@@ -1265,7 +1267,7 @@
         ' 条\n点击查看 Token 详情';
     }
     // 有待总结的新楼层时点亮小圆点
-    var meta = getMeta(session);
+    var meta = getMeta(session, memoryOwner(session));
     var msgs = Array.isArray(session.messages) ? session.messages.length : 0;
     var pending = msgs - getMemoryData(session).summarizedFloorCursor;
     if (els.dot) els.dot.hidden = !(meta.autoSummary && pending >= meta.autoInterval);
@@ -1325,7 +1327,7 @@
     if (!owner) throw new Error('子对话不存在');
     session.activeSubChatId = owner === session ? '' : owner.id; session.messages = owner.messages || [];
     return {session:session, owner:owner, messages:session.messages, sessionId:session.id, subChatId:owner === session ? '' : owner.id,
-      meta:getMeta(session), target:resolveMemoryTarget(session)};
+      meta:getMeta(session, owner), target:resolveMemoryTarget(session, owner)};
   }
   function recordPreview(ctx, title, built, maxTokens) {
     var debug = window.DebugInspector; if (!debug) throw new Error('调试模块未加载');
@@ -1577,7 +1579,7 @@
     bindEls();
     var session = typeof bridge.getCurrentSession === 'function' ? bridge.getCurrentSession() : null;
     if (!session || !els.dot) return;
-    var meta = getMeta(session);
+    var meta = getMeta(session, memoryOwner(session));
     var msgs = Array.isArray(session.messages) ? session.messages.length : 0;
     var pending = msgs - getMemoryData(session).summarizedFloorCursor;
     els.dot.hidden = !(meta.autoSummary && pending >= meta.autoInterval);
@@ -1594,6 +1596,7 @@
       if (waitingJob.stopped) throw userAbortError();
       assertTarget(ctx);
     }
+    ctx.meta = deepCopy(getMeta(session, ctx.owner));
     if (!ctx.meta.autoSummary) return;
     assertTarget(ctx);
     var count = typeof cutoffUserIndex === 'number' ? cutoffUserIndex : Math.max(0, (ctx.messages || []).length - 1);
@@ -1635,6 +1638,7 @@
     }
     assertTarget(ctx);
     if (opts.targetMessages && ctx.owner.messages !== opts.targetMessages) throw new Error('源消息列表已替换');
+    ctx.meta = deepCopy(getMeta(session, ctx.owner));
     memoryData = getMemoryData(session, ctx.owner);
     var summaryChanged = memoryData.summarizedFloorCursor !== previousCursor ||
       Object.keys(memoryData.memoryState.events || {}).sort().join(',') !== previousEventsSignature;
@@ -1765,7 +1769,9 @@
   }
 
   async function executeRecall(session, userText, apiMessages, ctx) {
-    var meta = ctx.meta;
+    var meta = getMeta(session, ctx.owner);
+    if (!meta.recallBeforeSend) return [];
+    ctx.meta = deepCopy(meta);
     var book = getVirtualMemoryBook(session, ctx.owner);
     if (!book) return [];
 
@@ -1857,7 +1863,8 @@
   async function beforeSendHook(session, userText, apiMessages, context) {
     var result = { apiMessages: apiMessages, retrievalTriggers: [], retrievalBookId: '' };
     if (!session || !Array.isArray(apiMessages)) return result;
-    var meta = context ? context.meta : getMeta(session);
+    var owner = context ? context.owner : memoryOwner(session);
+    var meta = getMeta(session, owner);
     if (meta.recallBeforeSend) {
       try {
         result.retrievalTriggers = await recallEventIds(session, userText, apiMessages, context);
@@ -2081,7 +2088,8 @@
   function applyConsoleSettings() {
     var session = bridge.getCurrentSession ? bridge.getCurrentSession() : null;
     if (!session) return;
-    var meta = getMeta(session);
+    var owner = memoryOwner(session);
+    var meta = getMeta(session, owner);
     meta.autoSummary = consoleEls.auto.checked;
     meta.autoInterval = clampInt(consoleEls.interval.value, 2, 200, 20);
     meta.floorInterval = meta.autoInterval;
@@ -2430,10 +2438,12 @@
           if (JSON.stringify(owner.memoryData.snapshots) !== beforeSnapshots) changed = true;
         }
       });
-      // 启动时同步升级所有会话的旧默认词，不必等待切入该会话。
-      var configBefore = JSON.stringify(session.memoryMeta);
-      getMeta(session);
-      if (JSON.stringify(session.memoryMeta) !== configBefore) changed = true;
+      // 启动与恢复时为每个旧子对话深拷贝配置，保留原开关与模板。
+      (session.subChats && session.subChats.length ? session.subChats : [session]).forEach(function (owner) {
+        var configBefore = JSON.stringify(owner.memoryMeta);
+        getMeta(session, owner);
+        if (JSON.stringify(owner.memoryMeta) !== configBefore) changed = true;
+      });
       // 全量恢复由宿主事务统一落盘，不能在迁移中另开保存链路。
       if (changed && options.persist !== false && !saveSession(session, { silent: true })) throw new Error('历史记忆迁移保存失败');
     });
@@ -2632,7 +2642,7 @@
     });
     flushHistory();
     // 未来召回尚未确定，说明放在载荷列表之后，不虚构插入位置或切断真实历史段。
-    if (session.memoryMeta && session.memoryMeta.recallBeforeSend === true) {
+    if (getMeta(session, memoryOwner(session)).recallBeforeSend === true) {
       card('【检索 AI 注入位置说明 · 深度待定】', '发送时检索，按命中事件深度插入；不代表本次确定载荷。', 'recall-note', true, 0);
     }
   }
@@ -2731,13 +2741,13 @@
       }
       restored.snapshots = JSON.parse(JSON.stringify(data.snapshots.slice(0, targetIndex + 1)));
     }
-    var meta = getMeta(session), previousMode = meta.memoryMode;
+    var meta = getMeta(session, owner), previousMode = meta.memoryMode;
     meta.memoryMode = restored.memoryMode;
     ensureMemoryStateSynced(restored, restored.memoryMode);
     owner.memoryData = restored; // 换引用使正在运行的旧总结无法提交。
-    getMeta(session);
+    getMeta(session, owner);
     if (options.persist === false) return true;
-    if (!saveSession(session)) { owner.memoryData = data; meta.memoryMode = previousMode; getMeta(session); return false; }
+    if (!saveSession(session)) { owner.memoryData = data; meta.memoryMode = previousMode; getMeta(session, owner); return false; }
     var job = summaryJobs.get(channelKey(session.id, owner === session ? '' : owner.id));
     if (job) job.stopped = true;
     var task = createTask('记忆库回滚');
@@ -2775,7 +2785,7 @@
         return msg && (msg.role === 'user' || msg.role === 'assistant') &&
           (typeof msg.content === 'string' ? stripThink(msg.content).trim() : !!msg.content);
       }).length;
-      var meta = getMeta(session);
+      var meta = getMeta(session, owner);
       return {memoryData:data, owner:owner, totalValidMessages:totalValidMessages,
         chunkFloors:Number(meta.autoInterval || 20), isActive:data.enabled === true};
     },
