@@ -10573,6 +10573,10 @@
     return {apiMessages:requestMessages, history:includedHistory, systemPromptChars:mergedSystemPrompt.length, prefillPrefix:prefillPrefix, triggeredEntryNames:triggeredEntryNames, triggeredEntries:triggeredEntryDetails, injectedEntries:ctxResult && ctxResult.injectedEntries || []};
   }
 
+  function isDefaultSubChatTitle(t) {
+    return !t || /^(新对话(\s*\d+)?|分支\s*·\s*自\s*#\d+\s*楼)$/.test(String(t).trim());
+  }
+
   /**
    * 发送消息并接收 AI 的流式回复
    */
@@ -10588,13 +10592,16 @@
     if (!targetSubChat) return;
     var isFirstUserMessage = !targetMessages.some(function (msg) { return msg.role === 'user'; });
     var autoTitleTarget = null;
-    if (isFirstUserMessage) {
-      if (session.subChats[0] && targetSubChat.id === session.subChats[0].id &&
-          (!session.title || session.title === '新对话')) {
-        autoTitleTarget = 'main';
-      } else if (/^新对话(\s*\d+)?$/.test(targetSubChat.title)) {
-        autoTitleTarget = 'sub';
-      }
+    var isMainSubChat = session.subChats[0] && targetSubChat.id === session.subChats[0].id;
+    var branchFloor = Number(targetSubChat.branchFloor) || 0;
+    if (isFirstUserMessage && isMainSubChat && (!session.title || session.title === '新对话')) {
+      autoTitleTarget = 'main';
+    } else if ((!isMainSubChat || (session.title && session.title !== '新对话')) &&
+        isDefaultSubChatTitle(targetSubChat.title) &&
+        (!targetMessages.some(function (m) { return m.role === 'assistant' && !m.isError; }) ||
+         (/^分支\s*·/.test(targetSubChat.title) && branchFloor > 0 &&
+          !targetMessages.slice(branchFloor).some(function (m) { return m.role === 'user'; })))) {
+      autoTitleTarget = 'sub';
     }
 
     var text = els.input.value.trim();
@@ -11276,7 +11283,7 @@
         if (autoTitleTarget === 'main' && (!session.title || session.title === '新对话')) {
           session.title = nextTitle;
           renderSessionList();
-        } else if (autoTitleTarget === 'sub' && /^新对话(\s*\d+)?$/.test(opts.targetSubChat.title)) {
+        } else if (autoTitleTarget === 'sub' && isDefaultSubChatTitle(opts.targetSubChat.title)) {
           opts.targetSubChat.title = nextTitle;
           renderSubChatList();
         }
@@ -11797,7 +11804,23 @@
     if (!keepScroll) forceScrollToBottom(); // 仅在重答最后一层时回到底部
     scheduleCloudUpload();
 
+    var targetSubChat = getActiveSubChat(session);
+    var targetMessages = session.messages;
+    // 分支继承的历史不计入首组问答；失败后重答仍可补起名。
+    var firstFloor = targetSubChat && /^分支\s*·/.test(targetSubChat.title)
+      ? Number(targetSubChat.branchFloor) || 0 : 0;
+    var firstUserIndex = targetMessages.findIndex(function (m, i) { return i >= firstFloor && m.role === 'user'; });
+    var isFirstPair = cutoffUserIndex === firstUserIndex && !targetMessages.slice(firstFloor, cutoffUserIndex)
+      .some(function (m) { return m.role === 'assistant' && !m.isError; });
+    var autoTitleTarget = targetSubChat && isDefaultSubChatTitle(targetSubChat.title) && isFirstPair &&
+      (targetSubChat !== session.subChats[0] || (session.title && session.title !== '新对话')) ? 'sub' : null;
+    var firstUser = targetMessages[cutoffUserIndex];
     requestAssistantReply(session, {
+      subChatId: targetSubChat && targetSubChat.id,
+      targetMessages: targetMessages,
+      targetSubChat: targetSubChat,
+      autoTitleTarget: autoTitleTarget,
+      firstUserText: firstUser.content || (firstUser.attachments && firstUser.attachments[0] && firstUser.attachments[0].name) || '附件',
       cutoffUserIndex: cutoffUserIndex,
       reuseIndex: reuseIndex,
       keepScroll: keepScroll,
@@ -11849,8 +11872,8 @@
       return;
     }
 
-    if (activeGenerationMap.size > 0) {
-      void window.showAppAlert('请等待回复结束');
+    if (isCurrentActiveChannelGenerating()) {
+      void window.showAppAlert('请等待当前对话回复结束');
       return;
     }
 

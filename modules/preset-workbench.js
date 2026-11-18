@@ -658,11 +658,15 @@
     var modules = preset.modules.filter(function (m) { return m.contentType !== 'wordlist'; });
     blocks.forEach(function (block) {
       var module = block.tagName && (modules.find(function (m) { return String(m.xmlTag || '').toLowerCase() === block.tagName; }) ||
-        modules.find(function (m) { return m.name === block.tagName || xmlModuleNames[block.tagName] === m.name; }));
+        modules.find(function (m) { return m.name === block.tagName ||
+          (xmlModuleNames[block.tagName] && xmlModuleNames[block.tagName] === m.name); }));
       if (!module) {
-        var ranked = modules.map(function (m) { return { module: m, score: bodyMatchScore(m.content, block.innerContent) }; })
+        // XML 只以完整正文评分，禁止由内部某一行拉出无关模块。
+        var ranked = modules.map(function (m) { return { module: m, score: block.tagName
+          ? calculateSim(bodyText(m.content), block.innerContent.trim()) : bodyMatchScore(m.content, block.innerContent) }; })
           .sort(function (a, b) { return b.score - a.score; });
-        if (ranked.length && ranked[0].score >= 0.25) module = ranked[0].module;
+        if (ranked.length && ranked[0].score >= (block.tagName ? 0.45 : 0.55) &&
+            (!block.tagName || ranked[0].score - (ranked[1] ? ranked[1].score : 0) >= 0.15)) module = ranked[0].module;
       }
       if (!module) {
         if (previous) groups.get(previous.id).appended.push(block.raw);
@@ -689,7 +693,11 @@
     });
   }
   function matchPasted(preset, pasted) {
-    var xmlBlocks = splitInputByModules(pasted);
+    var cleanedPasted = String(pasted || '').trim();
+    var fence = cleanedPasted.match(/^(`{3,}|~{3,})[^\r\n]*\r?\n([\s\S]*?)\r?\n\1[\t ]*$/);
+    if (fence) cleanedPasted = fence[2].trim();
+    pasted = cleanedPasted;
+    var xmlBlocks = splitInputByModules(cleanedPasted);
     if (xmlBlocks.length) {
       var mixed = [], cursor = 0;
       xmlBlocks.forEach(function (block) {
@@ -699,23 +707,15 @@
       });
       var tail = pasted.slice(cursor);
       if (tail.trim()) mixed.push({ tagName: '', innerContent: tail, raw: tail });
-      return autoMatchModules(preset, mixed);
+      var matched = autoMatchModules(preset, mixed);
+      if (!matched.length) matched.matchError = '未精准匹配到对应模块，请在左侧点击选中目标模块后再对比';
+      return matched;
     }
     var modules = preset.modules.filter(function (m) { return m.contentType !== 'wordlist'; });
     if (!modules.length) return [];
-    var candidates = modules.map(function (m) {
-      return { module: m, paragraphs: paragraphs(m.content || '').filter(function (p) { return p.trim(); }) };
-    });
     function rank(text) {
-      return candidates.map(function (candidate) {
-        function scoreText(source) {
-          var a = text.trim(), b = source.trim();
-          var contained = Math.min(a.length, b.length) >= 4 && (a.indexOf(b) >= 0 || b.indexOf(a) >= 0);
-          return contained ? 1 : calculateSim(a, b);
-        }
-        var score = bodyMatchScore(candidate.module.content || '', text);
-        candidate.paragraphs.forEach(function (p) { score = Math.max(score, scoreText(p)); });
-        return { module: candidate.module, score: score };
+      return modules.map(function (m) {
+        return { module: m, score: calculateSim(bodyText(m.content), text.trim()) };
       }).sort(function (a, b) { return b.score - a.score; });
     }
     function titleKey(line) {
@@ -733,13 +733,8 @@
       } else buffer += line;
     });
     if (buffer) blocks.push({ module: current, text: buffer });
-    var inputBlocks = [];
-    blocks.forEach(function (block) {
-      // 换行块继续细分，避免没有空行的相邻模块被当作同一段；原换行无损保留。
-      (block.text.match(/[^\r\n]*(?:\r\n|\n|\r)|[^\r\n]+$/g) || []).forEach(function (text) {
-        inputBlocks.push({ module: block.module, text: text });
-      });
-    });
+    // 无明确标题或分隔线时保持整块，不按换行逐行跨模块配对。
+    var inputBlocks = blocks;
     current = null;
     var overall = rank(pasted)[0];
     inputBlocks.forEach(function (block) {
@@ -750,8 +745,8 @@
       }
       if (!owner) {
         var best = rank(text)[0];
-        owner = current && text.trim().length < 40 && best.score < 0.4 ? current :
-          (best.score >= 0.25 ? best.module : (current || (overall.score >= 0.3 ? overall.module : null)));
+        owner = best.score >= 0.55 ? best.module :
+          (current || (overall.score >= 0.55 ? overall.module : null));
         if (!owner) { pending += text; return; }
       }
       // 每个块仅写入唯一归属，禁止向未命中模块回填整稿。
@@ -795,7 +790,7 @@
         tasks.push({ presetId: rightPreset.id, moduleId: target.id, original: JSON.stringify(target), left: left.content || '', right: target.content || '', name: target.name || '未命名模块' });
       });
     }
-    if (!tasks.length) return notify('暂无可匹配文本模块');
+    if (!tasks.length) return notify(tasks.matchError || '暂无可匹配文本模块');
     diffRows.replaceChildren(); review = tasks;
     tasks.forEach(renderDiffTask); diffBox.hidden = false; syncLayout();
     notify(tasks.length > 1 ? '多模块对比已就绪' : '对比已就绪');
@@ -1039,20 +1034,22 @@
   }
   // 复制导出与保存提取严格分离：这里保留全部红绿块并附可读标记。
   function serializeDiffCopy(root) {
-    function read(node) {
+    function read(node, activeMark) {
       if (node.nodeType === 3) return node.nodeValue;
       if (node.nodeType !== 1 && node.nodeType !== 11) return '';
       if (node.nodeType === 1 && /^(SCRIPT|STYLE)$/.test(node.tagName)) return '';
       if (node.nodeType === 1 && node.tagName === 'BR') return '\n';
-      var text = Array.from(node.childNodes).map(read).join('');
+      var mark = node.nodeType === 1 && (node.classList.contains('diff-del') ? 'del' :
+        node.classList.contains('diff-add') ? 'add' : null);
+      var text = Array.from(node.childNodes).map(function (child) { return read(child, activeMark || mark); }).join('');
       if (node.nodeType === 1) {
-        if (node.classList.contains('diff-del')) return '【-删除：' + text + '-】';
-        if (node.classList.contains('diff-add')) return '【+新增：' + text + '+】';
+        if (mark === 'del' && activeMark !== 'del') return '【-删除：' + text + '-】';
+        if (mark === 'add' && activeMark !== 'add') return '【+新增：' + text + '+】';
         if (/^(DIV|P|LI|PRE|BLOCKQUOTE|H[1-6])$/.test(node.tagName) && node.nextSibling && !text.endsWith('\n')) text += '\n';
       }
       return text;
     }
-    return read(root);
+    return read(root, null);
   }
   function selectedDiffCopy(editor) {
     var selection = window.getSelection(), output = [];
