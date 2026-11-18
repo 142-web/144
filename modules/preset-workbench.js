@@ -629,38 +629,78 @@
       return new RegExp('^[\\t ]*[-*+][\\t ]+' + name + '[\\t ]*[:：]', 'm').test(left) ? prefix + name + '：' : all;
     });
   }
+  // 仅完整单一父块才剥壳，兄弟块及壳外文字不能误吞。
+  function outerXml(text) {
+    text = String(text || '').trim();
+    var blocks = splitInputByModules(text);
+    return blocks.length === 1 && blocks[0].start === 0 && blocks[0].end === text.length ? blocks[0] : null;
+  }
+  function bodyText(text) {
+    var shell = outerXml(text);
+    return shell ? shell.innerContent.trim() : String(text || '').trim();
+  }
+  function bodyMatchScore(source, input) {
+    var a = bodyText(source), b = bodyText(input);
+    if (!a || !b) return 0;
+    var linesA = new Set(a.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(function (s) { return s.length >= 6; }));
+    var linesB = new Set(b.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(function (s) { return s.length >= 6; }));
+    var shared = 0;
+    linesB.forEach(function (s) { if (linesA.has(s)) shared++; });
+    var score = Math.max(calculateSim(a, b), shared / Math.max(1, Math.min(linesA.size, linesB.size)));
+    if (shared >= 2) score = Math.max(score, 0.9);
+    var pa = paragraphs(a).filter(function (s) { return s.trim().length >= 8; });
+    var pb = paragraphs(b).filter(function (s) { return s.trim().length >= 8; });
+    pa.forEach(function (x) { pb.forEach(function (y) { score = Math.max(score, calculateSim(x, y)); }); });
+    return score;
+  }
   function autoMatchModules(preset, blocks) {
-    var groups = new Map(), pending = [];
+    var groups = new Map(), pending = [], previous = null;
+    var modules = preset.modules.filter(function (m) { return m.contentType !== 'wordlist'; });
     blocks.forEach(function (block) {
-      var module = preset.modules.find(function (m) { return m.contentType !== 'wordlist' && String(m.xmlTag || '').toLowerCase() === block.tagName; }) ||
-        preset.modules.find(function (m) { return m.contentType !== 'wordlist' && !m.xmlTag && xmlModuleNames[block.tagName] === m.name; });
-      // 未命中块保留完整壳，统一在最后一张卡正文比对结束后追加。
-      if (!module) { pending.push(block.raw); return; }
+      var module = block.tagName && (modules.find(function (m) { return String(m.xmlTag || '').toLowerCase() === block.tagName; }) ||
+        modules.find(function (m) { return m.name === block.tagName || xmlModuleNames[block.tagName] === m.name; }));
+      if (!module) {
+        var ranked = modules.map(function (m) { return { module: m, score: bodyMatchScore(m.content, block.innerContent) }; })
+          .sort(function (a, b) { return b.score - a.score; });
+        if (ranked.length && ranked[0].score >= 0.25) module = ranked[0].module;
+      }
+      if (!module) {
+        if (previous) groups.get(previous.id).appended.push(block.raw);
+        else pending.push(block.raw);
+        return;
+      }
       var entry = groups.get(module.id);
       if (entry) entry.right += '\n\n' + block.innerContent.trim();
       else {
-        entry = { tag: block.tagName, right: block.innerContent.trim(), appended: [] };
+        var shell = outerXml(module.content), tag = (shell && shell.tagName) || block.tagName;
+        entry = { tag: tag, right: block.innerContent.trim(), appended: pending.splice(0) };
         groups.set(module.id, entry);
       }
+      previous = module;
     });
-    // 全部未知时也不丢稿：原模块不变，完整块追加到首个可用文本模块。
-    if (pending.length && !groups.size) {
-      var first = preset.modules.find(function (m) { return m.contentType !== 'wordlist'; });
-      if (first) groups.set(first.id, { right: first.content || '', appended: [] });
-    }
-    var matched = preset.modules.filter(function (m) { return groups.has(m.id); });
-    return matched.map(function (m, index) {
-      var entry = groups.get(m.id), content = m.content || '';
-      var wrapped = entry.tag && new RegExp('^\\s*<' + entry.tag + '>', 'i').test(content);
+    // 无任何可靠命中时不擅自选择首模块；原粘贴稿仍保留在输入框。
+    return modules.filter(function (m) { return groups.has(m.id); }).map(function (m) {
+      var entry = groups.get(m.id), content = m.content || '', shell = outerXml(content);
+      var wrapped = entry.tag && shell && shell.tagName === entry.tag;
+      var left = wrapped ? shell.innerContent.trim() : content.trim();
       return { presetId: preset.id, moduleId: m.id, original: JSON.stringify(m), xmlTag: entry.tag,
-        bareXml: entry.tag && !wrapped, appended: index === matched.length - 1 ? pending : [],
-        left: entry.tag ? xmlBody(content, entry.tag).trim() : content,
-        right: entry.tag ? normalizeMetadataHeads(entry.right.trim(), xmlBody(content, entry.tag)) : entry.right, name: m.name || '未命名模块' };
+        bareXml: entry.tag && !wrapped, appended: entry.appended,
+        left: left, right: normalizeMetadataHeads(entry.right.trim(), left), name: m.name || '未命名模块' };
     });
   }
   function matchPasted(preset, pasted) {
     var xmlBlocks = splitInputByModules(pasted);
-    if (xmlBlocks.length) return autoMatchModules(preset, xmlBlocks);
+    if (xmlBlocks.length) {
+      var mixed = [], cursor = 0;
+      xmlBlocks.forEach(function (block) {
+        var gap = pasted.slice(cursor, block.start);
+        if (gap.trim()) mixed.push({ tagName: '', innerContent: gap, raw: gap });
+        mixed.push(block); cursor = block.end;
+      });
+      var tail = pasted.slice(cursor);
+      if (tail.trim()) mixed.push({ tagName: '', innerContent: tail, raw: tail });
+      return autoMatchModules(preset, mixed);
+    }
     var modules = preset.modules.filter(function (m) { return m.contentType !== 'wordlist'; });
     if (!modules.length) return [];
     var candidates = modules.map(function (m) {
@@ -673,7 +713,7 @@
           var contained = Math.min(a.length, b.length) >= 4 && (a.indexOf(b) >= 0 || b.indexOf(a) >= 0);
           return contained ? 1 : calculateSim(a, b);
         }
-        var score = scoreText(candidate.module.content || '');
+        var score = bodyMatchScore(candidate.module.content || '', text);
         candidate.paragraphs.forEach(function (p) { score = Math.max(score, scoreText(p)); });
         return { module: candidate.module, score: score };
       }).sort(function (a, b) { return b.score - a.score; });
@@ -701,6 +741,7 @@
       });
     });
     current = null;
+    var overall = rank(pasted)[0];
     inputBlocks.forEach(function (block) {
       var text = block.text, owner = block.module;
       if (!text.trim() && !owner) {
@@ -709,13 +750,17 @@
       }
       if (!owner) {
         var best = rank(text)[0];
-        owner = current && text.trim().length < 40 && best.score < 0.4 ? current : best.module;
+        owner = current && text.trim().length < 40 && best.score < 0.4 ? current :
+          (best.score >= 0.25 ? best.module : (current || (overall.score >= 0.3 ? overall.module : null)));
+        if (!owner) { pending += text; return; }
       }
       // 每个块仅写入唯一归属，禁止向未命中模块回填整稿。
       add(owner, pending + text); pending = ''; current = owner;
     });
     return modules.filter(function (m) { return groups.has(m.id); }).map(function (m) {
-      return { presetId: preset.id, moduleId: m.id, original: JSON.stringify(m), left: m.content || '', right: groups.get(m.id), name: m.name || '未命名模块' };
+      var shell = outerXml(m.content), left = bodyText(m.content);
+      return { presetId: preset.id, moduleId: m.id, original: JSON.stringify(m), xmlTag: shell && shell.tagName,
+        left: left, right: normalizeMetadataHeads(groups.get(m.id).trim(), left), name: m.name || '未命名模块' };
     });
   }
   function compare() {
@@ -731,11 +776,14 @@
         if (!owner || owner.contentType === 'wordlist' || locateSnippet(owner.content || '', snippet) < 0) return notify('片段已变化，请重新划选');
         tasks = [{ presetId: leftPreset.id, moduleId: owner.id, original: JSON.stringify(owner), snippet: snippet,
           left: snippet.selectedText, right: pasted, name: owner.name || '未命名模块' }];
-      } else if (splitInputByModules(pasted).length) {
-        tasks = leftPreset ? matchPasted(chosen && chosen.length ? { id: leftPreset.id, modules: chosen } : leftPreset, pasted) : [];
       } else if (chosen && chosen.length === 1) {
+        // 明确单选优先于任何 XML 路由；输入只与目标正文比对，绝不整块追加。
         tasks = chosen.filter(function (m) { return m.contentType !== 'wordlist'; }).map(function (m) {
-          return { presetId: leftPreset.id, moduleId: m.id, original: JSON.stringify(m), left: m.content || '', right: pasted, name: m.name || '未命名模块' };
+          var shell = outerXml(pasted), content = (m.content || '').trim();
+          var wrapped = shell && new RegExp('^\\s*<' + shell.tagName + '>', 'i').test(content);
+          var right = shell && !wrapped ? shell.innerContent.trim() : pasted.trim();
+          return { presetId: leftPreset.id, moduleId: m.id, original: JSON.stringify(m), left: content,
+            right: normalizeMetadataHeads(right, content), name: m.name || '未命名模块' };
         });
       } else tasks = leftPreset ? matchPasted(chosen && chosen.length ? { id: leftPreset.id, modules: chosen } : leftPreset, pasted) : [];
     } else if (leftPreset && rightPreset) {
