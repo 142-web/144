@@ -526,6 +526,27 @@
     return ops;
   }
   function inlineDiff(a, b) {
+    // 纯分段/空白变化走线性对齐，超长粘合段也不会因 LCS 限额退化为整段红绿。
+    if (a !== b && a.replace(/\s/g, '') === b.replace(/\s/g, '')) {
+      var aligned = [], x = 0, y = 0;
+      function append(type, left, right) {
+        if (!left && !right) return;
+        var last = aligned[aligned.length - 1];
+        if (last && last.type === type) { last.left += left; last.right += right; }
+        else aligned.push({ type: type, left: left, right: right });
+      }
+      while (x < a.length || y < b.length) {
+        var sx = x, sy = y;
+        while (x < a.length && /\s/.test(a[x])) x++;
+        while (y < b.length && /\s/.test(b[y])) y++;
+        var wa = a.slice(sx, x), wb = b.slice(sy, y);
+        append(wa === wb ? 'same' : 'change', wa, wb);
+        sx = x; sy = y;
+        while (x < a.length && y < b.length && !/\s/.test(a[x]) && a[x] === b[y]) { x++; y++; }
+        append('same', a.slice(sx, x), b.slice(sy, y));
+      }
+      return aligned;
+    }
     var ta = tokens(a), tb = tokens(b), start = 0, endA = ta.length, endB = tb.length;
     // 公共首尾先直通，长句删短也不受中间编辑矩阵上限影响。
     while (start < endA && start < endB && ta[start] === tb[start]) start++;
@@ -547,12 +568,82 @@
     });
     return groups;
   }
+  // 只粘合按顺序完整落入对侧长段的邻段，保留原始分隔符而不额外制造换行。
+  function gluedParagraphCount(parts, at, target) {
+    var compact = function (text) { return text.replace(/\s+/g, ''); };
+    var whole = compact(target), first = compact(parts[at] || '');
+    if (!first || whole.length <= first.length || whole.indexOf(first) < 0) return 1;
+    var end = whole.indexOf(first) + first.length, count = 1;
+    for (var k = at + 1; k < parts.length; k++) {
+      var next = compact(parts[k]);
+      if (!next) continue;
+      var found = whole.indexOf(next, end);
+      if (found < 0) break;
+      end = found + next.length; count = k - at + 1;
+    }
+    return count;
+  }
+  function redundantDiffText(a, b) {
+    a = a.trim(); b = b.trim();
+    if (!a || !b) return false;
+    if (a === b) return true;
+    var n = Math.min(a.length, b.length), prefix = 0, suffix = 0;
+    while (prefix < n && a[prefix] === b[prefix]) prefix++;
+    while (suffix < n && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix++;
+    if (prefix > 15 || suffix > 15) return true;
+    function overlap(x, y) {
+      var at = x.indexOf(y.slice(0, 16));
+      while (at >= 0) {
+        var tail = x.slice(at);
+        if (tail.length > 15 && y.indexOf(tail) === 0) return true;
+        at = x.indexOf(y.slice(0, 16), at + 1);
+      }
+      return false;
+    }
+    return overlap(a, b) || overlap(b, a);
+  }
+  // 渲染前消融相邻红绿同文；重新对齐而非直接丢字符，两侧投影（含空白）均不变。
+  function healDiffRows(rows) {
+    function parts(r) { return r.parts || [{ type: r.kind === 'same' ? 'same' : 'change', left: r.left, right: r.right }]; }
+    function edge(r, reverse) {
+      var list = parts(r), k = reverse ? list.length - 1 : 0, step = reverse ? -1 : 1;
+      while (k >= 0 && k < list.length) {
+        var p = list[k];
+        if (p.left.trim() || p.right.trim()) return p;
+        k += step;
+      }
+      return null;
+    }
+    var result = [];
+    rows.forEach(function (r) {
+      result.push(r);
+      while (result.length > 1) {
+        var last = result[result.length - 1], start = result.length - 2;
+        while (start > 0 && !result[start].left.trim() && !result[start].right.trim()) start--;
+        var prev = result[start], tail = edge(prev, true), head = edge(last, false);
+        if (!tail || !head || tail.type === 'same' || head.type === 'same' ||
+            !(redundantDiffText(tail.right, head.left) || redundantDiffText(tail.left, head.right))) break;
+        var merged = result.slice(start), left = merged.map(function (p) { return p.left; }).join('');
+        var right = merged.map(function (p) { return p.right; }).join('');
+        result.splice(start, merged.length, { left: left, right: right, kind: left === right ? 'same' : 'rewrite', parts: inlineDiff(left, right) });
+      }
+    });
+    return result;
+  }
   function diffTexts(left, right) {
     left = String(left); right = String(right);
     var a = paragraphs(left), b = paragraphs(right), fast = Math.max(left.length, right.length) > 15000 || a.length * b.length > 90000;
     var rows = [], i = 0, j = 0;
     function row(x, y, kind) {
       rows.push({ left: x, right: y, kind: kind, parts: kind === 'rewrite' ? inlineDiff(x, y) : null });
+    }
+    function glueCurrent() {
+      if (i >= a.length || j >= b.length || a[i] === b[j]) return false;
+      var countA = gluedParagraphCount(a, i, b[j]), countB = gluedParagraphCount(b, j, a[i]);
+      if (countA < 2 && countB < 2) return false;
+      if (countA > 1) { row(a.slice(i, i + countA).join(''), b[j++], 'rewrite'); i += countA; }
+      else { row(a[i++], b.slice(j, j + countB).join(''), 'rewrite'); j += countB; }
+      return true;
     }
     // 单个非空段落（含局部选区）无条件进入段内比对，空白仍逐字保留。
     if (a.filter(function (p) { return p.trim(); }).length === 1 && b.filter(function (p) { return p.trim(); }).length === 1) {
@@ -568,6 +659,7 @@
       }
       i = 0; j = 0;
       while (i < a.length || j < b.length) {
+        if (glueCurrent()) continue;
         var s = i < a.length && j < b.length ? scores[i * b.length + j] : 0;
         if (s >= 0.4 && Math.abs(dp[i * width + j] - s - dp[(i + 1) * width + j + 1]) < 0.000001) { row(a[i], b[j], a[i] === b[j] ? 'same' : 'rewrite'); i++; j++; }
         else if (j < b.length && (i === a.length || dp[i * width + j + 1] >= dp[(i + 1) * width + j])) row('', b[j++], 'add');
@@ -576,6 +668,7 @@
     } else {
       // 超长输入有限前瞻对齐；命中段落仍走有界逐字比对。
       while (i < a.length || j < b.length) {
+        if (glueCurrent()) continue;
         if (i >= a.length) { row('', b[j++], 'add'); continue; }
         if (j >= b.length) { row(a[i++], '', 'del'); continue; }
         if (a[i] === b[j]) { row(a[i++], b[j++], 'same'); continue; }
@@ -587,7 +680,7 @@
         else { row(a[i++], '', 'del'); row('', b[j++], 'add'); }
       }
     }
-    return { rows: rows, fast: fast };
+    return { rows: healDiffRows(rows), fast: fast };
   }
   function render() {
     var list = presets();
@@ -963,13 +1056,20 @@
     copy.classList.add('pw-copy-diff');
     var count = el('span', 'pw-diff-selection-count'); count.setAttribute('role', 'status'); count.hidden = true;
     save.classList.add('pw-save-diff'); head.append(title, copy, count, save);
-    var editor = createDiffEditor(); task.editor = editor; task.save = save; task.card = card;
+    var editor = createDiffEditor();
+    task.editor = editor; task.save = save; task.card = card;
     task.activeDiffRange = null; task.saveLabel = saveLabel; task.selectionLabel = count;
     editor.addEventListener('mouseup', function () { captureDiffSelection(task); });
     editor.addEventListener('keyup', function () { captureDiffSelection(task); });
     editor.addEventListener('input', function () { clearDiffSelection(task); });
     card.append(head, editor);
     if (previousCard) previousCard.replaceWith(card); else diffRows.appendChild(card);
+    refreshDiffEditor(task, result);
+  }
+  function refreshDiffEditor(task, result) {
+    result = result || diffTexts(task.left, task.right);
+    var editor = task.editor;
+    editor.replaceChildren();
     function appendPart(row, type, text) {
       if (!text) return;
       var node = el('span', type === 'same' ? '' : 'diff-' + type, text);
@@ -1034,11 +1134,34 @@
   }
   function saveEdited(task) { return saveReviewTasks([task], false); }
   function saveAllEdited() { return saveReviewTasks(review ? review.slice() : [], true); }
+  // 锁定编辑区与所有祖先滚动层；重绘后同步恢复，再于下一帧补偿布局/滚动锚定。
+  function captureReviewViewport(task, range) {
+    var editor = task.editor, ancestors = [], node = editor.parentElement;
+    while (node) {
+      ancestors.push({ node: node, top: node.scrollTop, left: node.scrollLeft });
+      node = node.parentElement;
+    }
+    var scrollTop = editor.scrollTop, scrollLeft = editor.scrollLeft;
+    var rect = range.getBoundingClientRect(), cardTop = task.card.getBoundingClientRect().top;
+    var selectionTop = rect.top;
+    function restore() {
+      if (!editor.isConnected) return;
+      ancestors.slice().reverse().forEach(function (entry) { entry.node.scrollTop = entry.top; entry.node.scrollLeft = entry.left; });
+      editor.scrollTop = scrollTop; editor.scrollLeft = scrollLeft;
+      var drift = task.card.getBoundingClientRect().top - cardTop;
+      if (Math.abs(drift) > 0.5) {
+        var scroller = ancestors.find(function (entry) { return entry.node.scrollHeight > entry.node.clientHeight && /auto|scroll/.test(getComputedStyle(entry.node).overflowY); });
+        if (scroller) scroller.node.scrollTop += drift;
+      }
+    }
+    return { restore: restore, selectionTop: selectionTop };
+  }
   function saveReviewTasks(tasks, all, selectedRange) {
     if (!review || !tasks.length) return false;
     if (selectedRange && (tasks.length !== 1 || !validDiffRange(tasks[0].editor, selectedRange))) return false;
     // 局部按钮绝不因选区失效而降级成整卡保存。
     if (arguments.length > 2 && !selectedRange) return false;
+    var viewport = selectedRange ? captureReviewViewport(tasks[0], selectedRange) : null;
     var list = presets(), updates = [];
     // 先在独立副本中完成全部校验和裁决；任一目标失效时不提交任何模块。
     for (var i = 0; i < tasks.length; i++) {
@@ -1073,13 +1196,18 @@
       }
       clearDiffSelection(task);
       if (selectedRange) {
-        // 以保存结果重新建立基线，防止后续常规保存重新带入框外修改。
-        task.left = task.right = update.snippet ? update.snippet.selectedText : update.module.content;
-        renderDiffTask(task, task.card);
+        // left/right 即本模块的 before/after；仅推进基线，原修改稿始终保留。
+        task.left = update.snippet ? update.snippet.selectedText : update.module.content;
+        refreshDiffEditor(task);
+        task.save.disabled = task.left === task.right;
       }
     });
-    if (selectedRange) window.getSelection().removeAllRanges();
-    // 常规保存保留手调；局部保存刷新为已提交原文。
+    if (selectedRange) {
+      window.getSelection().removeAllRanges();
+      viewport.restore();
+      requestAnimationFrame(viewport.restore);
+    }
+    // 常规保存保留手调；局部保存原位重新比对，未合入差异继续保留。
     notify(selectedRange ? '已局部保存，框外原文保留' : all ? '已将对比结果全部保存到对应模块' : '已保存到目标模块');
     return true;
   }
