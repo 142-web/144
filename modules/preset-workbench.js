@@ -648,18 +648,40 @@
     }
     return similarity(pairs(a), pairs(b));
   }
+  // 忽略空白，以有序双字组多重集交集衡量实际贴合量，不按短模块长度放大。
+  function matchedCharCount(a, b) {
+    function pairs(text) {
+      var chars = Array.from(text.replace(/\s/gu, '')), counts = new Map();
+      for (var i = 1; i < chars.length; i++) {
+        var key = chars[i - 1] + chars[i]; counts.set(key, (counts.get(key) || 0) + 1);
+      }
+      return counts;
+    }
+    var left = pairs(a), right = pairs(b), common = 0;
+    left.forEach(function (n, key) { common += Math.min(n, right.get(key) || 0); });
+    return common;
+  }
   function localContentScore(source, text, parts, lines) {
-    var input = text.trim();
-    if (!input || !source.trim()) return 0;
+    var input = text.trim(), sourceLength = source.trim().length;
+    if (!input || !sourceLength) return 0;
     var score = contentSimilarity(source, input);
-    if (input.length >= 6 && source.includes(input)) score = Math.max(score, 0.95);
+    if (input.length >= 6 && source.includes(input)) {
+      score = Math.max(score, input.length >= 30 ? 0.9 : Math.min(0.9, 0.4 + input.length / 60));
+    }
+    function containScore(hit) {
+      var hitLen = hit.length, inputCover = hitLen / Math.max(1, input.length), sourceCover = hitLen / Math.max(1, sourceLength);
+      // 孤立短标签只有在两侧均占主体时才能提分，标签仍作为普通文本参与相似度。
+      if (hitLen < 30 && /^<\/?[^<>\r\n]+\/?>$/.test(hit) && !(inputCover >= 0.6 && sourceCover >= 0.6)) return 0;
+      return 0.9 * Math.min(1, (inputCover * 0.7 + sourceCover * 0.3) * 1.4);
+    }
     effectiveLines(input).forEach(function (line) {
-      if (lines.has(line)) score = Math.max(score, 0.9);
-      else if (line.length >= 6 && source.includes(line)) score = Math.max(score, 0.85);
+      if (lines.has(line) || (line.length >= 6 && source.includes(line))) score = Math.max(score, containScore(line));
     });
     parts.forEach(function (part) {
-      score = Math.max(score, contentSimilarity(part, input));
-      if (part.trim().length >= 6 && input.includes(part.trim())) score = Math.max(score, 0.9);
+      part = part.trim();
+      var balance = Math.min(1, Math.min(part.length, input.length) / Math.max(30, Math.max(part.length, input.length) * 0.5));
+      score = Math.max(score, contentSimilarity(part, input) * balance);
+      if (part.length >= 6 && input.includes(part)) score = Math.max(score, containScore(part));
     });
     return score;
   }
@@ -673,31 +695,46 @@
     var candidates = modules.map(function (m) {
       var source = m.content || '', parts = Array.from(new Set(contentBlocks(source).map(function (part) { return part.trim(); }).filter(Boolean)));
       var lines = effectiveLines(source), shared = 0, weighted = 0, total = 0, cache = new Map();
+      var matchedChars = matchedCharCount(source, pasted), blockMatchedChars = 0, blockCharFits = [];
       inputLines.forEach(function (line) { if (lines.has(line)) shared++; });
       var scores = blocks.map(function (block) {
         var key = block.trim();
         if (!cache.has(key)) cache.set(key, localContentScore(source, block, parts, lines));
         var score = cache.get(key), weight = key.length;
         weighted += score * weight; total += weight;
+        var blockFit = matchedCharCount(source, block);
+        blockMatchedChars += blockFit; blockCharFits.push(blockFit);
         return score;
       });
       var lineRatio = shared / Math.max(1, inputLines.size);
       // 按整篇覆盖度加权，防止某一相似段落把多个模块的混合稿全部抢走。
       return { module: m, scores: scores, lineRatio: lineRatio,
+        charFit: Math.max(matchedChars, blockMatchedChars), blockCharFits: blockCharFits,
         score: Math.max(contentSimilarity(source, pasted), lineRatio, weighted / Math.max(1, total)) };
-    }).sort(function (a, b) { return b.score - a.score; });
+    }).sort(function (a, b) {
+      var higher = a.charFit >= b.charFit ? a : b;
+      if (Math.abs(a.charFit - b.charFit) > 40 && higher.score >= 0.25) return b.charFit - a.charFit;
+      return b.score - a.score;
+    });
     function task(m, text) {
       return { presetId: preset.id, moduleId: m.id, original: JSON.stringify(m),
         left: m.content, right: normalizeMetadataHeads(text, m.content), name: m.name || '未命名模块' };
     }
     var best = candidates[0], second = candidates[1];
-    // 有其他模块独占命中的段落时必须走混合路由，不能仅靠多数相同行吞并。
+    var dominant = best && best.charFit >= 60 && (best.charFit >= (second ? second.charFit : 0) * 1.8 ||
+      best.charFit - (second ? second.charFit : 0) >= 80);
+    // 主体贴合量明确领先时，短引用不得拆稿；其他模块须有独立长段显著胜出。
     var mixed = best && blocks.some(function (block, index) {
       return block.trim() && candidates.some(function (candidate) {
-        return candidate !== best && candidate.scores[index] >= 0.45 &&
-          candidate.scores[index] - best.scores[index] >= 0.15;
+        if (candidate === best) return false;
+        if (dominant) {
+          var otherFit = candidate.blockCharFits[index], bestFit = best.blockCharFits[index];
+          return otherFit > 50 && otherFit - bestFit > 20 && otherFit >= bestFit * 1.5;
+        }
+        return candidate.scores[index] >= 0.45 && candidate.scores[index] - best.scores[index] >= 0.15;
       });
     });
+    if (best && dominant && !mixed) return [task(best.module, pasted)];
     if (best && !mixed && ((best.score >= 0.45 && best.score - (second ? second.score : 0) >= 0.15) ||
         (best.lineRatio > 0.3 && best.lineRatio - (second ? second.lineRatio : 0) >= 0.15))) {
       return [task(best.module, pasted)];
