@@ -1039,11 +1039,40 @@
       return persistPromptPresets();
     },
     // 工作台只经此桥提交；保存失败恢复旧内存，不伪报成功。
-    applyPresetWorkbenchChanges: function (nextPresets) {
-      if (!Array.isArray(nextPresets)) return false;
-      var previous = promptPresets;
-      promptPresets = normalizePromptPresets(safeClone(nextPresets));
-      if (!persistPromptPresets()) { promptPresets = previous; return false; }
+    applyPresetWorkbenchChanges: function (nextPresets, options) {
+      if (!Array.isArray(nextPresets) || !nextPresets.length) return false;
+      var previous = promptPresets, next = normalizePromptPresets(safeClone(nextPresets));
+      if (!next.length) return false;
+      var oldIds = new Set(previous.map(function (p) { return p.id; }));
+      var nextIds = new Set(next.map(function (p) { return p.id; }));
+      var bindings = options && options.sessionPresetBindings;
+      var changed = [];
+      sessions.forEach(function (s) {
+        var id = s.presetId;
+        if (bindings && Object.prototype.hasOwnProperty.call(bindings, s.id) &&
+            (bindings[s.id] == null || nextIds.has(bindings[s.id]))) id = bindings[s.id];
+        else if (oldIds.has(id) && !nextIds.has(id)) id = next[0].id;
+        if (id !== s.presetId) { changed.push({ session: s, presetId: s.presetId }); s.presetId = id; }
+      });
+      var keys = changed.length ? [PROMPT_PRESETS_KEY, SESSIONS_KEY] : [PROMPT_PRESETS_KEY];
+      var raw = keys.map(readStorageRaw);
+      promptPresets = next;
+      try {
+        requireStorageWrite(writeStorageValue(PROMPT_PRESETS_KEY, next));
+        if (changed.length) requireStorageWrite(writeStorageValue(SESSIONS_KEY, serializeSessions()));
+      } catch (error) {
+        promptPresets = previous;
+        changed.forEach(function (entry) { entry.session.presetId = entry.presetId; });
+        keys.forEach(function (key, index) {
+          try {
+            if (raw[index] == null) { localStorage.removeItem(key); storageCache.delete(key); }
+            else { localStorage.setItem(key, raw[index]); storageCache.set(key, raw[index]); }
+          } catch (rollbackError) { console.error('预设回滚失败：', rollbackError); }
+        });
+        return false;
+      }
+      touchLastModified();
+      if (!isBooting && !applyingCloudData) scheduleCloudUpload();
       renderPresetSelect();
       renderTopPresetSelect();
       refreshPresetButtonState();
@@ -7190,6 +7219,7 @@
    * 展开底部模型列表面板
    */
   function openQuickModelPanel() {
+    cancelToolbarHolds();
     if (!els.quickModelPanel || !els.quickModelBtn) return;
     if (els.quickModelBtn.disabled) return;
     // 两个上弹面板互斥：打开模型切换框时自动收起参数面板
@@ -7348,6 +7378,7 @@
    * 展开当前对话参数面板（同时自动收起模型切换面板）
    */
   function openQuickParamsPanel() {
+    cancelToolbarHolds();
     if (!els.quickParamsPanel || !els.quickParamsBtn) return;
     closeQuickModelPanel();
     refreshQuickParamsPanel();
@@ -8177,6 +8208,7 @@
    * 打开设置：基于已保存渠道创建草稿，避免取消时误改
    */
   function openSettings() {
+    cancelToolbarHolds();
     draftProviders = cloneProviders(providers);
     // 选中目标同样进入草稿态：保存时才正式落库
     draftActiveTarget = cloneActiveTarget(activeTarget);
@@ -8752,6 +8784,7 @@
    * 打开预设管理弹窗并渲染
    */
   function openPresetModal() {
+    cancelToolbarHolds();
     if (!els.presetModal) return;
     renderPresetSelect();
     renderPresetModules();
@@ -8865,7 +8898,7 @@
     // 1. 左侧拖拽手柄
     var handle = document.createElement('span');
     handle.className = 'drag-handle';
-    handle.textContent = '⋮⋮';
+    handle.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M8 5h1m6 0h1M8 12h1m6 0h1M8 19h1m6 0h1"/></svg>';
     handle.title = '按住拖动调整顺序';
     handle.setAttribute('aria-hidden', 'true');
 
@@ -8954,19 +8987,33 @@
   /**
    * 原生 HTML5 拖拽 + 移动端触摸拖拽排序（无「上移 / 下移」按钮）
    */
+  function armModuleDrag(row, e) {
+    var target = e.target;
+    var excluded = target.closest('input, textarea, select, label, .switch, .module-row-actions, .module-icon-btn, [contenteditable="true"], .module-content, .module-preview, .wb-editor');
+    var header = !excluded && (target === row || target.closest('.drag-handle, .module-name-trigger, .module-name'));
+    var selection = window.getSelection(), anchor = selection && selection.anchorNode;
+    var anchorEl = anchor && (anchor.nodeType === 1 ? anchor : anchor.parentElement);
+    var selectedBody = anchorEl && row.contains(anchorEl) && anchorEl.closest('textarea, [contenteditable="true"], .module-content, .module-preview, .wb-editor');
+    if (!target.closest('.drag-handle') && selectedBody && !selection.isCollapsed && !header) return false;
+    if (e.button !== 0 || !header) return false;
+    if (selection) selection.removeAllRanges();
+    return true;
+  }
   function bindModuleDragSort(row, handle) {
     var dragArmed = false;
     row.draggable = false;
     row.addEventListener('mousedown', function (e) {
-      dragArmed = e.button === 0 && !!e.target.closest('.drag-handle, .module-name') &&
-        !e.target.closest('textarea, input, [contenteditable="true"], .module-content, .module-preview, .wb-editor');
+      dragArmed = armModuleDrag(row, e);
+      e.stopPropagation();
       row.draggable = dragArmed;
     });
     function disarm() { dragArmed = false; row.draggable = false; }
     row.addEventListener('mouseup', disarm);
-    row.addEventListener('mouseleave', disarm);
+    row.addEventListener('dragover', function (e) { e.stopPropagation(); handleModuleDragOver(e); });
+    row.addEventListener('drop', function (e) { e.preventDefault(); e.stopPropagation(); disarm(); var p = getCurrentSessionPreset(); if (p) commitModuleOrder(p); });
     row.addEventListener('dragstart', function (e) {
-      if (!dragArmed || !e.dataTransfer || String(window.getSelection()).length > 0) {
+      e.stopPropagation();
+      if (!dragArmed || !e.dataTransfer) {
         e.preventDefault(); e.stopPropagation(); return;
       }
       row.classList.add('dragging');
@@ -8978,7 +9025,8 @@
       }
     });
 
-    row.addEventListener('dragend', function () {
+    row.addEventListener('dragend', function (e) {
+      e.stopPropagation(); disarm();
       row.classList.remove('dragging');
       var preset = getCurrentSessionPreset();
       if (preset) commitModuleOrder(preset);
@@ -9032,6 +9080,7 @@
    * （仅在 bindEvents 中绑定一次，避免每个条目重复绑定造成排序抖动）
    */
   function handleModuleDragOver(e) {
+    e.stopPropagation();
     if (!els.presetModuleList) return;
     var dragging = els.presetModuleList.querySelector('.preset-module-item.dragging');
     if (!dragging) return;
@@ -9351,6 +9400,7 @@
    * 打开顶部 #0 下拉面板（同时渲染预设下拉框与模块列表）
    */
   function openTopPresetDropdown() {
+    cancelToolbarHolds();
     if (!els.topPresetDropdown) return;
     renderTopPresetSelect();
     renderTopPresetModules();
@@ -9378,6 +9428,7 @@
    * 切换顶部 #0 下拉面板展开 / 收起
    */
   function toggleTopPresetDropdown() {
+    cancelToolbarHolds();
     if (topPresetOpen) {
       closeTopPresetDropdown();
     } else {
@@ -9610,7 +9661,7 @@
     // 1. 拖拽手柄
     var handle = document.createElement('span');
     handle.className = 'drag-handle';
-    handle.textContent = '⠿';
+    handle.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M8 5h1m6 0h1M8 12h1m6 0h1M8 19h1m6 0h1"/></svg>';
     handle.title = '按住拖动调整顺序';
     handle.setAttribute('aria-hidden', 'true');
 
@@ -9782,14 +9833,17 @@
     var dragArmed = false;
     row.draggable = false;
     row.addEventListener('mousedown', function (e) {
-      dragArmed = e.button === 0 && !!e.target.closest('.drag-handle, .module-name') &&
-        !e.target.closest('textarea, input, [contenteditable="true"], .module-content, .module-preview, .wb-editor');
+      dragArmed = armModuleDrag(row, e);
+      e.stopPropagation();
       row.draggable = dragArmed;
     });
     function disarm() { dragArmed = false; row.draggable = false; }
-    row.addEventListener('mouseup', disarm); row.addEventListener('mouseleave', disarm);
+    row.addEventListener('mouseup', disarm);
+    row.addEventListener('dragover', function (e) { e.stopPropagation(); handleTopModuleDragOver(e); });
+    row.addEventListener('drop', function (e) { e.preventDefault(); e.stopPropagation(); disarm(); commitTopModuleOrder(preset); });
     row.addEventListener('dragstart', function (e) {
-      if (!dragArmed || !e.dataTransfer || String(window.getSelection()).length > 0) {
+      e.stopPropagation();
+      if (!dragArmed || !e.dataTransfer) {
         e.preventDefault(); e.stopPropagation(); return;
       }
       row.classList.add('dragging');
@@ -9801,7 +9855,8 @@
       }
     });
 
-    row.addEventListener('dragend', function () {
+    row.addEventListener('dragend', function (e) {
+      e.stopPropagation(); disarm();
       row.classList.remove('dragging');
       commitTopModuleOrder(preset);
     });
@@ -9848,6 +9903,7 @@
    * 顶部下拉容器上的 dragover：实时把拖拽行移动到光标位置
    */
   function handleTopModuleDragOver(e) {
+    e.stopPropagation();
     if (!els.tpModuleList) return;
     var dragging = els.tpModuleList.querySelector('.preset-module-item.dragging');
     if (!dragging) return;
@@ -12097,6 +12153,7 @@
 
   // 移动端仅展开搜索组件，不另建检索入口或存储状态。
   function openSearch() {
+    cancelToolbarHolds();
     if (isDraggingToolbar) return;
     if (els.headerSearchWrap) els.headerSearchWrap.classList.add('search-expanded');
     if (els.chatSearchToggle) els.chatSearchToggle.setAttribute('aria-expanded', 'true');
@@ -14478,6 +14535,17 @@
       showToast('排序保存失败');
     }
   }
+  // 浮层期间只禁止工具栏排序，不取消浮层内部的原生模块拖拽。
+  function hasAnyOpenPopupOrModal() {
+    return Array.from(document.querySelectorAll('.modal-overlay:not(.hidden), .modal:not(.hidden), dialog[open], #quick-params-panel:not(.hidden), #top-preset-dropdown:not(.hidden), #model-Select-dropdown:not(.hidden), #header-search-wrap.search-expanded, #pw-modal:not(.hidden), [data-toolbar-track] [aria-expanded="true"]')).some(function (node) {
+      return node.getClientRects().length > 0 && getComputedStyle(node).visibility !== 'hidden';
+    });
+  }
+  function cancelToolbarHolds() {
+    document.querySelectorAll('[data-toolbar-track]').forEach(function (track) {
+      if (track._resetToolbarDrag) track._resetToolbarDrag();
+    });
+  }
   function bindToolbarSort(track) {
     if (track.dataset.sortBound) return;
     track.dataset.sortBound = 'true';
@@ -14521,10 +14589,13 @@
       active = null; pending = null;
       isLongPressReady = false; hasDraggedSort = false;
     }
+    track._resetToolbarDrag = function () { if (pending || active || timer) finish(false); };
     function begin(item, x, y, kind, id) {
+      if (hasAnyOpenPopupOrModal()) { finish(false); return; }
       finish(false);
       pending = { item: item, x: x, y: y, kind: kind, id: id };
       timer = setTimeout(function () {
+        if (hasAnyOpenPopupOrModal()) { finish(false); return; }
         if (!pending) return;
         isLongPressReady = true;
         pending.item.classList.add('long-press-ready');
@@ -14532,6 +14603,7 @@
       }, 350);
     }
     function move(x, y, event) {
+      if (hasAnyOpenPopupOrModal()) { finish(false); return; }
       if (!pending) return;
       if (!isLongPressReady) {
         if (Math.hypot(x - pending.x, y - pending.y) >= 8) finish(false);
@@ -14553,7 +14625,9 @@
     track.addEventListener('click', function (e) {
       if (isDraggingToolbar || Date.now() < blockClickUntil) { e.preventDefault(); e.stopImmediatePropagation(); }
     }, true);
-    track.addEventListener('dragstart', function (e) {
+    track.addEventListener('dragstart', function onDragStart(e) {
+      if (e.target.closest('.preset-module-item, .top-preset-module-item, [role="dialog"], dialog')) return;
+      if (hasAnyOpenPopupOrModal()) { finish(false); e.preventDefault(); return; }
       var item = itemAt(e.target);
       // 实鼠标由同一长按分流接管，避免原生拖放抢走松手事件。
       if (pending || !item || isControl(e.target)) { e.preventDefault(); return; }
@@ -14633,6 +14707,11 @@
     var observer = new MutationObserver(discover);
     var composer = document.querySelector('.composer');
     if (composer) observer.observe(composer, { childList: true, subtree: true });
+    // 同步捕获任意模块打开的浮层，及时撤销未到期的长按。
+    new MutationObserver(function () {
+      if (hasAnyOpenPopupOrModal()) cancelToolbarHolds();
+    }).observe(document.body, { subtree: true, attributes: true, attributeFilter: ['class', 'hidden', 'open', 'aria-expanded'] });
+    document.addEventListener('click', cancelToolbarHolds, true);
     window.addEventListener('DOMContentLoaded', discover, { once: true });
   }
 

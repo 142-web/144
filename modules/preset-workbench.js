@@ -44,7 +44,7 @@
     selectedText = originalText.slice(start, end);
     activeSnippetSelection = { presetId: presetId, moduleId: moduleId, startOffset: start, endOffset: end, selectedText: selectedText };
     invalidate();
-    snippetLabel.textContent = '🎯 已锁定局部片段（' + Array.from(selectedText).length + ' 字）— 粘贴新内容将仅对比并替换该选中段落';
+    snippetLabel.textContent = '已锁定片段 · ' + Array.from(selectedText).length + ' 字';
     snippetBar.hidden = false;
   }
   // 偏移优先；全文变化后只接受唯一原片段，歧义时拒绝覆盖。
@@ -67,6 +67,11 @@
     paste: 'M9 5H5v16h14V5h-4M9 3h6v4H9z', check: 'm4 12 5 5L20 6',
     snapshot: 'M12 8v5l3 2M3 11a9 9 0 1 1 2 7M3 4v7h7',
     plus: 'M12 5v14M5 12h14',
+    pencil: 'm15 4 5 5M4 16 16 4a2 2 0 0 1 4 4L8 20H4z',
+    eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6',
+    selectAll: 'M9 4h11v16H4V9m-1-5 3 3 5-5M8 12h8M8 16h8',
+    enabled: 'M7 7h10a5 5 0 0 1 0 10H7A5 5 0 0 1 7 7M17 10v4',
+    disabled: 'M7 7h10a5 5 0 0 1 0 10H7A5 5 0 0 1 7 7M7 10v4',
     export: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12'
   };
   function el(tag, cls, text) {
@@ -88,9 +93,16 @@
     if (saveAllButton) saveAllButton.disabled = true;
     if (diffRows) diffRows.querySelectorAll('.pw-save-diff').forEach(function (button) { button.disabled = true; });
   }
+  function historySnapshot() {
+    var bindings = {};
+    if (host.getSessionIds && host.getSessionById) host.getSessionIds().forEach(function (id) {
+      var session = host.getSessionById(id); if (session) bindings[id] = session.presetId || null;
+    });
+    return { presets: clone(presets()), bindings: bindings, sides: clone(sides) };
+  }
   function commit(list, preserveReview) {
     // list 只改公共桥返回的副本；重新读取宿主旧库，绝不把修改稿当作撤销快照。
-    var previous = clone(presets()), history = undoStack.slice();
+    var previous = historySnapshot(), history = undoStack.slice();
     undoStack.push(previous);
     if (undoStack.length > 30) undoStack.shift();
     try {
@@ -103,17 +115,22 @@
   function restoreHistory(redo) {
     var source = redo ? redoStack : undoStack, target = redo ? undoStack : redoStack;
     if (!source.length) return;
-    var current = clone(presets()), previous = clone(source[source.length - 1]);
+    var current = historySnapshot(), previous = clone(source[source.length - 1]);
     try {
-      if (!host.applyPresetWorkbenchChanges(previous)) throw new Error('恢复失败');
+      if (!host.applyPresetWorkbenchChanges(previous.presets, { sessionPresetBindings: previous.bindings })) throw new Error('恢复失败');
     } catch (_) { notify('恢复失败，请重试'); return; }
     source.pop(); target.push(current); if (target.length > 30) target.shift();
+    sides.forEach(function (s, i) { Object.assign(s, previous.sides[i]); });
     clearSnippet(); invalidate(); render(); notify(redo ? '已恢复下一步' : '已返回上一步');
   }
   function undo() { restoreHistory(false); }
   function syncSelection(side) {
     var panel = panels[side], ids = selectedIds(side);
-    panel.selection.hidden = !ids.length;
+    panel.selection.hidden = false;
+    var p = presetAt(presets(), side), all = !!(p && p.modules.length && p.modules.every(function (m) { return ids.indexOf(m.id) >= 0; }));
+    panel.selectAll.title = all ? '取消全选' : '全选'; panel.selectAll.setAttribute('aria-label', panel.selectAll.title);
+    panel.selectAll.setAttribute('aria-pressed', String(all));
+    panel.batchButtons.forEach(function (b) { b.disabled = !ids.length; });
     panel.selectionCount.textContent = '已选 ' + ids.length + ' 项';
     panel.list.querySelectorAll('.pw-module').forEach(function (card) {
       var selected = ids.indexOf(card.dataset.moduleId) >= 0;
@@ -267,7 +284,74 @@
     if (!entries.length) panel.snapshotList.appendChild(el('p', 'pw-empty', '暂无快照'));
     positionSnapshots(side);
   }
+  function focusName(side, id) {
+    var card = Array.from(panels[side].list.querySelectorAll('.pw-module')).find(function (n) { return n.dataset.moduleId === id; });
+    var input = card && card.querySelector('.pw-module-name');
+    if (input) { input.focus(); input.select(); }
+  }
+  function addModule(side) {
+    var list = presets(), p = presetAt(list, side); if (!p) return notify('请先选择预设');
+    var m = { id: newId(list), name: '新模块', enabled: true, roleType: 'system', content: '', contentType: 'text' };
+    var at = p.modules.findIndex(function (item) { return item.id === sides[side].afterId; });
+    p.modules.splice(at < 0 ? p.modules.length : at + 1, 0, m);
+    expanded.add(side + ':' + p.id + ':' + m.id);
+    if (commit(list)) focusName(side, m.id);
+  }
+  async function batchModules(side, action) {
+    var presetId = sides[side].presetId, ids = selectedIds(side).slice();
+    if (!ids.length) return;
+    if (action === 'delete' && !await window.confirm('删除所选模块？')) return;
+    var list = presets(), p = list.find(function (item) { return item.id === presetId; });
+    if (!p) return notify('预设已失效');
+    if (action === 'delete') p.modules = p.modules.filter(function (m) { return ids.indexOf(m.id) < 0; });
+    else p.modules.forEach(function (m) { if (ids.indexOf(m.id) >= 0) m.enabled = action === 'enable'; });
+    commit(list);
+  }
+  async function deletePreset(side) {
+    var id = sides[side].presetId;
+    if (presets().length <= 1) return notify('至少保留一个预设');
+    if (!await window.confirm('删除当前预设？')) return;
+    var list = presets();
+    if (list.length <= 1) return notify('至少保留一个预设');
+    if (!list.some(function (p) { return p.id === id; })) return notify('预设已失效');
+    // 提交前保留旧栏位供撤销；render 对失效预设统一回退第一项。
+    commit(list.filter(function (p) { return p.id !== id; }));
+  }
+  function previewPreset(side) {
+    var p = presetAt(presets(), side); if (!p) return notify('请先选择预设');
+    var enabled = p.modules.filter(function (m) { return m.enabled === true; });
+    var text = enabled.map(function (m) {
+      var content = moduleText(m), tag = m.xmlTag;
+      if (content && m.contentType !== 'wordlist' && tag && /^[a-zA-Z0-9_\u3400-\u9fff-]+$/.test(tag) &&
+          !new RegExp('^<' + tag + '>\\s*[\\s\\S]*</' + tag + '>$', 'i').test(content)) content = '<' + tag + '>\n' + content + '\n</' + tag + '>';
+      return content;
+    }).filter(Boolean).join('\n\n');
+    var popup = el('dialog', 'pw-preview'), top = el('div', 'pw-bar');
+    top.append(el('strong', '', '合并预览'), el('span', 'pw-preview-stats', enabled.length + ' 模块 · ' + Array.from(text).length + ' 字符 · ~' + estimateTokens(text) + ' tokens'));
+    var area = el('textarea', 'pw-preview-text'); area.readOnly = true; area.value = text; area.setAttribute('aria-label', '合并全文');
+    top.append(iconButton('copy', '复制全文', async function () {
+      try {
+        try { await navigator.clipboard.writeText(text); }
+        catch (_) { area.focus(); area.select(); if (!document.execCommand('copy')) throw new Error('复制失败'); }
+        notify('已复制全文');
+      } catch (_) { notify('请划选复制'); }
+    }), iconButton('close', '关闭预览', function () { popup.close(); }));
+    popup.append(top, area); dialog.appendChild(popup);
+    popup.addEventListener('close', function () { popup.remove(); }); popup.showModal();
+  }
   function buildEditor(body, side, p, m) {
+    var fields = el('div', 'pw-metadata');
+    [['模块名称', 'pw-module-name', m.name || ''], ['XML 标签名（可选）', 'pw-module-tag', m.xmlTag || '']].forEach(function (entry, index) {
+      var label = el('label', '', entry[0]), input = el('input', entry[1]); input.value = entry[2]; input.type = 'text'; input.setAttribute('aria-label', entry[0]);
+      input.addEventListener('change', function () {
+        var value = input.value.trim();
+        if (!index && !value) { input.value = m.name || ''; return notify('名称不能为空'); }
+        if (index && value && !/^[a-zA-Z0-9_\u3400-\u9fff-]+$/.test(value)) return notify('标签名无效');
+        editModule(side, p.id, m, function (target) { if (index) { if (value) target.xmlTag = value.toLowerCase(); else delete target.xmlTag; } else target.name = value; });
+      });
+      label.appendChild(input); fields.appendChild(label);
+    });
+    body.appendChild(fields);
     var mode = el('select', 'pw-content-mode'); mode.setAttribute('aria-label', '编辑模式');
     ['text', 'wordlist'].forEach(function (value) { var o = el('option', '', value === 'text' ? '普通文本' : '词库胶囊'); o.value = value; mode.appendChild(o); });
     mode.value = m.contentType === 'wordlist' ? 'wordlist' : 'text';
@@ -513,7 +597,7 @@
     });
     sides.forEach(function (s, side) {
       var p = presetAt(list, side), panel = panels[side];
-      if (!p) { s.presetId = list.length ? list[Math.min(side, list.length - 1)].id : ''; s.moduleId = ''; clearSelection(side); p = presetAt(list, side); }
+      if (!p) { s.presetId = list.length ? list[s.presetId ? 0 : Math.min(side, list.length - 1)].id : ''; s.moduleId = ''; clearSelection(side); p = presetAt(list, side); }
       var ids = selectedIds(side);
       for (var i = ids.length - 1; i >= 0; i--) if (!p || !p.modules.some(function (m) { return m.id === ids[i]; })) ids.splice(i, 1);
       panel.select.replaceChildren();
@@ -530,21 +614,23 @@
         card.draggable = false; card.dataset.moduleId = m.id;
         var dragArmed = false;
         card.addEventListener('mousedown', function (e) {
-          dragArmed = e.button === 0 && !!e.target.closest('.pw-grip, .pw-pick strong') &&
+          dragArmed = e.button === 0 && (e.target === card || !!e.target.closest('.pw-grip, .pw-pick strong, .pw-state')) &&
             !e.target.closest('textarea, input, select, [contenteditable="true"], .module-content, .wb-editor, .pw-module-body');
+          if (dragArmed && window.getSelection()) window.getSelection().removeAllRanges();
           card.draggable = dragArmed;
         });
         function disarm() { dragArmed = false; card.draggable = false; }
-        card.addEventListener('mouseup', disarm); card.addEventListener('mouseleave', disarm);
+        card.addEventListener('mouseup', disarm);
         card.addEventListener('dragstart', function (e) {
-          if (!dragArmed || !e.dataTransfer || String(window.getSelection()).length > 0 || e.target.closest('textarea, input, select, [contenteditable="true"], .pw-module-body')) {
+          e.stopPropagation();
+          if (!dragArmed || !e.dataTransfer || e.target.closest('textarea, input, select, [contenteditable="true"], .pw-module-body')) {
             e.preventDefault(); e.stopPropagation(); return;
           }
           drag = { presetId: p.id, moduleId: m.id, original: JSON.stringify(m), copy: e.ctrlKey || e.altKey };
           e.dataTransfer.effectAllowed = 'copyMove'; e.dataTransfer.setData('text/plain', m.id);
           card.classList.add('dragging');
         });
-        card.addEventListener('dragend', clearDrag);
+        card.addEventListener('dragend', function (e) { e.stopPropagation(); disarm(); clearDrag(); });
         var handle = el('span', 'pw-grip'); handle.title = '拖拽移动或排序';
         handle.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="' + paths.grip + '"/></svg>';
         card.appendChild(handle);
@@ -562,6 +648,14 @@
         });
         card.appendChild(pick);
         var actions = el('div', 'pw-actions');
+        var enabledButton = iconButton(m.enabled === true ? 'enabled' : 'disabled', m.enabled === true ? '禁用模块' : '启用模块', function () {
+          editModule(side, p.id, m, function (target) { target.enabled = target.enabled !== true; });
+        });
+        enabledButton.classList.add('pw-enabled'); enabledButton.setAttribute('role', 'switch'); enabledButton.setAttribute('aria-checked', String(m.enabled === true));
+        actions.appendChild(enabledButton);
+        actions.appendChild(iconButton('pencil', '重命名模块', function () {
+          expanded.add(side + ':' + p.id + ':' + m.id); render(); focusName(side, m.id);
+        }));
         if (workbenchMode === 'merge') actions.appendChild(iconButton(side ? 'copyLeft' : 'copyRight', side ? '复制到左栏' : '复制到右栏', function () { transfer(side, m.id); }));
         actions.appendChild(iconButton('trash', '删除模块', function () { removeModule(side, m.id); }));
         var key = side + ':' + p.id + ':' + m.id, body = el('div', 'pw-module-body');
@@ -939,6 +1033,7 @@
       var label = el('label'), heading = el('span', 'pw-preset-heading'), total = el('span', 'pw-token-total');
       heading.append(el('span', '', side ? '目标预设 B' : '当前预设 A'), total); label.appendChild(heading);
       var select = el('select'); select.setAttribute('aria-label', side ? '右栏预设' : '左栏预设'); label.appendChild(select); bar.appendChild(label);
+      bar.append(iconButton('trash', '删除预设', function () { deletePreset(side); }), iconButton('plus', '新增模块', function () { addModule(side); }), iconButton('eye', '预览合并', function () { previewPreset(side); }));
       var after = el('select'); after.setAttribute('aria-label', side ? '右栏插入位置' : '左栏插入位置');
       after.addEventListener('change', function () { s.afterId = after.value; });
       select.addEventListener('change', function () { if (side === 0) clearSnippet(); s.presetId = select.value; s.moduleId = ''; s.afterId = ''; clearSelection(side); panels[side].quickForm.hidden = true; invalidate(); render(); });
@@ -975,9 +1070,17 @@
       quickForm.append(quickName, iconButton('check', '保存快捷模式', saveQuickMode), iconButton('close', '取消', function () { quickForm.hidden = true; }));
       quickBar.append(quickModes, quickAdd);
       var selection = el('div', 'pw-selection'), selectionCount = el('span');
-      selection.append(selectionCount, iconButton('close', '清空选择', function () {
-        clearSelection(side); s.moduleId = ''; invalidate(); syncSelection(side); syncLayout();
-      })); selection.hidden = true;
+      var selectAll = iconButton('selectAll', '全选', function () {
+        var p = presetAt(presets(), side), ids = selectedIds(side); if (!p) return;
+        var all = p.modules.every(function (m) { return ids.indexOf(m.id) >= 0; });
+        ids.length = 0; if (!all) p.modules.forEach(function (m) { ids.push(m.id); });
+        sides[side].moduleId = ids.length ? ids[ids.length - 1] : ''; invalidate(); syncSelection(side); syncLayout();
+      });
+      var batchButtons = [iconButton('enabled', '批量启用', function () { batchModules(side, 'enable'); }), iconButton('disabled', '批量禁用', function () { batchModules(side, 'disable'); }), iconButton('trash', '批量删除', function () { batchModules(side, 'delete'); })];
+      selection.append(selectionCount, selectAll); batchButtons.forEach(function (b) { selection.appendChild(b); });
+      selection.appendChild(iconButton('close', '清空选择', function () {
+        clearSelection(side); sides[side].moduleId = ''; invalidate(); syncSelection(side); syncLayout();
+      }));
       section.append(bar, snapshots, quickBar, quickForm, after, selection);
       var list = el('div', 'pw-list'); section.appendChild(list); columns.appendChild(section);
       list.addEventListener('dragover', function (e) {
@@ -1001,7 +1104,7 @@
         drag.copy = e.ctrlKey || e.altKey;
         try { moveModule(side, dropPosition(e, side)); } finally { clearDrag(); }
       });
-      panels.push({ section: section, selection: selection, selectionCount: selectionCount, select: select, after: after, list: list, total: total, quickModes: quickModes, quickAdd: quickAdd, quickForm: quickForm, snapshotButton: snapshotButton, badge: badge, snapshots: snapshots, snapshotName: snapshotInput, snapshotList: snapshotList });
+      panels.push({ section: section, selection: selection, selectionCount: selectionCount, selectAll: selectAll, batchButtons: batchButtons, select: select, after: after, list: list, total: total, quickModes: quickModes, quickAdd: quickAdd, quickForm: quickForm, snapshotButton: snapshotButton, badge: badge, snapshots: snapshots, snapshotName: snapshotInput, snapshotList: snapshotList });
     });
     dialog.appendChild(columns);
     iterationPane = el('section', 'pw-iteration'); iterationPane.setAttribute('aria-label', '智能比对工作台');
