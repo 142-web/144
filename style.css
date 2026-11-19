@@ -7531,6 +7531,12 @@ body {
 .pw-dialog .pw-save-diff:hover:not(:disabled), .pw-dialog .pw-save-all:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 22%, var(--panel)); box-shadow: 0 0 0 1px var(--accent); }
 .pw-diff-card > .pw-bar { flex-wrap: wrap; }
 .pw-review-bar { display: flex; max-width: 100%; }
+.pw-diff-selection { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; max-width: 100%; min-width: 0; }
+.pw-diff-selection[hidden] { display: none; }
+.pw-diff-selection-count { color: var(--accent); font-size: 11px; overflow-wrap: anywhere; }
+.pw-dialog .pw-save-partial { color: var(--accent); border-color: var(--accent); background: var(--cot-bg); background: color-mix(in srgb, var(--accent) 16%, var(--panel)); }
+.pw-dialog .pw-save-partial:hover:not(:disabled) { box-shadow: 0 0 0 1px var(--accent); }
+.pw-diff-selection .pw-icon { flex-shrink: 0; }
 .pw-diff-rows, .pw-diff-rows .diff-del, .pw-diff-rows .diff-add, .pw-diff-rows [data-keep="false"] { -webkit-user-select: text; user-select: text; }
 .pw-diff-rows { min-height: 80px; max-height: 350px; padding: 10px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.7 ui-monospace, Consolas, monospace; }
 .pw-diff-rows:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -7540,6 +7546,8 @@ body {
 .pw-diff-rows .diff-pair { display: inline; }
 .pw-diff-rows [data-keep="true"] { text-decoration: none; opacity: 1; }
 .pw-diff-rows [data-keep="false"] { display: inline; text-decoration: line-through; opacity: 0.75; }
+.pw-diff-rows .diff-del[data-keep="true"] { color: inherit; background: transparent; }
+.pw-diff-rows .diff-add[data-keep="false"] { color: var(--text-dim); background: transparent; }
 .pw-collapse .pw-same { display: none; }
 .pw-foot { flex-shrink: 0; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 8px; font-size: 12px; }
 .pw-foot label { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); }

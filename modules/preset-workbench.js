@@ -67,6 +67,8 @@
     paste: 'M9 5H5v16h14V5h-4M9 3h6v4H9z', check: 'm4 12 5 5L20 6',
     snapshot: 'M12 8v5l3 2M3 11a9 9 0 1 1 2 7M3 4v7h7',
     plus: 'M12 5v14M5 12h14',
+    partialSave: 'M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5m-9-9 4 4 7-8',
+    focus: 'M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5M8 12h8M12 8v8',
     pencil: 'm15 4 5 5M4 16 16 4a2 2 0 0 1 4 4L8 20H4z',
     eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6',
     selectAll: 'M9 4h11v16H4V9m-1-5 3 3 5-5M8 12h8M8 16h8',
@@ -89,6 +91,7 @@
   function presets() { return host.getPromptPresets() || []; }
   function presetAt(list, side) { return list.find(function (p) { return p.id === sides[side].presetId; }); }
   function invalidate() {
+    if (review) review.forEach(clearDiffSelection);
     review = null;
     if (saveAllButton) saveAllButton.disabled = true;
     if (diffRows) diffRows.querySelectorAll('.pw-save-diff').forEach(function (button) { button.disabled = true; });
@@ -876,19 +879,72 @@
     }
     if (!tasks.length) return notify(tasks.matchError || '暂无可匹配文本模块');
     diffRows.replaceChildren(); review = tasks; saveAllButton.disabled = false;
-    tasks.forEach(renderDiffTask); diffBox.hidden = false; syncLayout();
+    tasks.forEach(function (task) { renderDiffTask(task); }); diffBox.hidden = false; syncLayout();
     notify(tasks.length > 1 ? '多模块对比已就绪' : '对比已就绪');
   }
-  function renderDiffTask(task) {
+  function validDiffRange(editor, range) {
+    return !!(range && !range.collapsed && editor.contains(range.commonAncestorContainer) && range.toString().length);
+  }
+  function clearDiffSelection(task) {
+    task.activeDiffRange = null;
+    if (task.selectionTools) task.selectionTools.hidden = true;
+  }
+  function captureDiffSelection(task) {
+    if (!task.editor || !task.editor.isConnected || task.save.disabled) return clearDiffSelection(task);
+    var selection = window.getSelection(), range = selection && selection.rangeCount ? selection.getRangeAt(0) : null;
+    if (!validDiffRange(task.editor, range)) return clearDiffSelection(task);
+    task.activeDiffRange = range.cloneRange();
+    task.selectionLabel.textContent = '已框选局部 (' + Array.from(range.toString()).length + ' 字)';
+    task.selectionTools.hidden = false;
+  }
+  // 在原 DOM 判断交集，再按相同顺序投影至克隆；不能把原 Range 用于克隆节点。
+  function projectPartialDiff(editor, range, target) {
+    var source = editor.querySelectorAll('.diff-del, .diff-add');
+    var nodes = target.querySelectorAll('.diff-del, .diff-add');
+    source.forEach(function (node, index) {
+      var isDelete = node.classList.contains('diff-del');
+      nodes[index].dataset.keep = range.intersectsNode(node) ?
+        String(node.dataset.keep === undefined ? !isDelete : node.dataset.keep === 'true') : String(isDelete);
+    });
+  }
+  function extractPartialDiffText(diffBox, selectedRange) {
+    if (!validDiffRange(diffBox, selectedRange)) throw new Error('请重新框选');
+    var clone = diffBox.cloneNode(true);
+    projectPartialDiff(diffBox, selectedRange, clone);
+    return extractMergedText(clone);
+  }
+  function focusDiffSelection(task) {
+    if (!validDiffRange(task.editor, task.activeDiffRange) || task.save.disabled) return;
+    projectPartialDiff(task.editor, task.activeDiffRange, task.editor);
+    notify('已保留框外原文');
+  }
+  function renderDiffTask(task, previousCard) {
     var result = diffTexts(task.left, task.right), card = el('article', 'pw-diff-card');
     var head = el('header', 'pw-bar'), title = el('strong', '', task.snippet ? '[局部片段] 保存至：' + task.name : '保存至模块：' + task.name);
     var save = iconButton('check', '保存此模块', function () { saveEdited(task); });
     save.appendChild(el('span', '', '保存此模块'));
     var copy = iconButton('copy', '复制比对结果（含红绿标记）', function () { copyDiffResult(task.editor); });
     copy.classList.add('pw-copy-diff');
-    save.classList.add('pw-save-diff'); head.append(title, copy, save);
-    var editor = createDiffEditor(); task.editor = editor; task.save = save;
-    card.append(head, editor); diffRows.appendChild(card);
+    var tools = el('div', 'pw-diff-selection'); tools.hidden = true;
+    var count = el('span', 'pw-diff-selection-count'); count.setAttribute('role', 'status');
+    var partial = iconButton('partialSave', '仅保存框选区域', function () { saveReviewTasks([task], false, task.activeDiffRange); });
+    partial.classList.add('pw-save-partial');
+    partial.setAttribute('aria-description', '框选内修改写入，框选外原文保留');
+    var focus = iconButton('focus', '聚焦框选区（忽略框外标红）', function () { focusDiffSelection(task); });
+    focus.classList.add('pw-focus-selection');
+    tools.append(count, focus, partial);
+    // 鼠标按下时保留原生选区；键盘激活也使用卡片内缓存的 Range。
+    [partial, focus].forEach(function (button) {
+      button.addEventListener('mousedown', function (e) { if (e.button === 0) e.preventDefault(); });
+    });
+    save.classList.add('pw-save-diff'); head.append(title, copy, tools, save);
+    var editor = createDiffEditor(); task.editor = editor; task.save = save; task.card = card;
+    task.activeDiffRange = null; task.selectionTools = tools; task.selectionLabel = count;
+    editor.addEventListener('mouseup', function () { captureDiffSelection(task); });
+    editor.addEventListener('keyup', function () { captureDiffSelection(task); });
+    editor.addEventListener('input', function () { clearDiffSelection(task); });
+    card.append(head, editor);
+    if (previousCard) previousCard.replaceWith(card); else diffRows.appendChild(card);
     function appendPart(row, type, text) {
       if (!text) return;
       var node = el('span', type === 'same' ? '' : 'diff-' + type, text);
@@ -953,8 +1009,11 @@
   }
   function saveEdited(task) { return saveReviewTasks([task], false); }
   function saveAllEdited() { return saveReviewTasks(review ? review.slice() : [], true); }
-  function saveReviewTasks(tasks, all) {
+  function saveReviewTasks(tasks, all, selectedRange) {
     if (!review || !tasks.length) return false;
+    if (selectedRange && (tasks.length !== 1 || !validDiffRange(tasks[0].editor, selectedRange))) return false;
+    // 局部按钮绝不因选区失效而降级成整卡保存。
+    if (arguments.length > 2 && !selectedRange) return false;
     var list = presets(), updates = [];
     // 先在独立副本中完成全部校验和裁决；任一目标失效时不提交任何模块。
     for (var i = 0; i < tasks.length; i++) {
@@ -965,7 +1024,7 @@
       if (!m || m.contentType === 'wordlist' || (!task.snippet && JSON.stringify(m) !== task.original)) {
         task.save.disabled = true; notify('目标已变化，请重新对比'); return false;
       }
-      var resolved = extractMergedText(task.editor), nextSnippet = null;
+      var resolved = selectedRange ? extractPartialDiffText(task.editor, selectedRange) : extractMergedText(task.editor), nextSnippet = null;
       if (task.snippet) {
         var fullText = m.content || '', at = locateSnippet(fullText, task.snippet);
         if (at < 0) { task.save.disabled = true; notify('片段已变化，请重新划选'); return false; }
@@ -987,9 +1046,16 @@
         }
         Object.assign(task.snippet, update.snippet);
       }
+      clearDiffSelection(task);
+      if (selectedRange) {
+        // 以保存结果重新建立基线，防止后续常规保存重新带入框外修改。
+        task.left = task.right = update.snippet ? update.snippet.selectedText : update.module.content;
+        renderDiffTask(task, task.card);
+      }
     });
-    // commit 的 render 已用最新库重建上方文本框；下方编辑器不重建，保留手调和红绿裁决。
-    notify(all ? '已将对比结果全部保存到对应模块' : '已保存到目标模块');
+    if (selectedRange) window.getSelection().removeAllRanges();
+    // 常规保存保留手调；局部保存刷新为已提交原文。
+    notify(selectedRange ? '已局部保存，框外原文保留' : all ? '已将对比结果全部保存到对应模块' : '已保存到目标模块');
     return true;
   }
   function build() {
@@ -1191,7 +1257,7 @@
     } catch (_) { notify('复制失败，请划选复制'); }
   }
   function createDiffEditor() {
-    var diffRows = el('div', 'pw-diff-rows');
+    var diffRows = el('div', 'pw-diff-rows pw-diff-box');
     diffRows.setAttribute('contenteditable', 'true'); diffRows.setAttribute('role', 'textbox');
     diffRows.setAttribute('aria-label', '编辑对比结果'); diffRows.setAttribute('aria-multiline', 'true');
     diffRows.addEventListener('copy', function (e) {
@@ -1227,6 +1293,16 @@
     if (host.closeInputToolbox) host.closeInputToolbox();
     if (!dialog.open) dialog.showModal();
   }
+  // 全局监听只注册一次；仅巡检当前 review，不为每张卡片遗留 document 监听器。
+  document.addEventListener('selectionchange', function () {
+    if (dialog && dialog.open && review) review.forEach(captureDiffSelection);
+  });
+  document.addEventListener('mousedown', function (e) {
+    if (!review) return;
+    review.forEach(function (task) {
+      if (!task.editor.contains(e.target) && !task.selectionTools.contains(e.target)) clearDiffSelection(task);
+    });
+  }, true);
   document.addEventListener('mychat-preset-imported', function () {
     if (dialog && dialog.open) { invalidate(); render(); }
   });
