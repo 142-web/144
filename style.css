@@ -7531,12 +7531,9 @@ body {
 .pw-dialog .pw-save-diff:hover:not(:disabled), .pw-dialog .pw-save-all:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 22%, var(--panel)); box-shadow: 0 0 0 1px var(--accent); }
 .pw-diff-card > .pw-bar { flex-wrap: wrap; }
 .pw-review-bar { display: flex; max-width: 100%; }
-.pw-diff-selection { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; max-width: 100%; min-width: 0; }
-.pw-diff-selection[hidden] { display: none; }
-.pw-diff-selection-count { color: var(--accent); font-size: 11px; overflow-wrap: anywhere; }
-.pw-dialog .pw-save-partial { color: var(--accent); border-color: var(--accent); background: var(--cot-bg); background: color-mix(in srgb, var(--accent) 16%, var(--panel)); }
-.pw-dialog .pw-save-partial:hover:not(:disabled) { box-shadow: 0 0 0 1px var(--accent); }
-.pw-diff-selection .pw-icon { flex-shrink: 0; }
+.pw-diff-selection-count { max-width: 100%; padding: 3px 7px; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); background: var(--cot-bg); font-size: 11px; overflow-wrap: anywhere; }
+.pw-diff-selection-count[hidden] { display: none; }
+.pw-dialog .pw-save-diff.is-partial-mode { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 22%, var(--panel)); box-shadow: 0 0 0 1px var(--accent); }
 .pw-diff-rows, .pw-diff-rows .diff-del, .pw-diff-rows .diff-add, .pw-diff-rows [data-keep="false"] { -webkit-user-select: text; user-select: text; }
 .pw-diff-rows { min-height: 80px; max-height: 350px; padding: 10px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.7 ui-monospace, Consolas, monospace; }
 .pw-diff-rows:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

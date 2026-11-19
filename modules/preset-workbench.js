@@ -67,8 +67,6 @@
     paste: 'M9 5H5v16h14V5h-4M9 3h6v4H9z', check: 'm4 12 5 5L20 6',
     snapshot: 'M12 8v5l3 2M3 11a9 9 0 1 1 2 7M3 4v7h7',
     plus: 'M12 5v14M5 12h14',
-    partialSave: 'M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5m-9-9 4 4 7-8',
-    focus: 'M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5M8 12h8M12 8v8',
     pencil: 'm15 4 5 5M4 16 16 4a2 2 0 0 1 4 4L8 20H4z',
     eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6',
     selectAll: 'M9 4h11v16H4V9m-1-5 3 3 5-5M8 12h8M8 16h8',
@@ -885,9 +883,16 @@
   function validDiffRange(editor, range) {
     return !!(range && !range.collapsed && editor.contains(range.commonAncestorContainer) && range.toString().length);
   }
+  function syncDiffSaveMode(task) {
+    var partial = !!task.activeDiffRange, label = partial ? '仅替换框选区域' : '保存此模块';
+    task.save.classList.toggle('is-partial-mode', partial);
+    task.save.title = label; task.save.setAttribute('aria-label', label);
+    task.saveLabel.textContent = label;
+    task.selectionLabel.hidden = !partial;
+  }
   function clearDiffSelection(task) {
     task.activeDiffRange = null;
-    if (task.selectionTools) task.selectionTools.hidden = true;
+    if (task.saveLabel) syncDiffSaveMode(task);
   }
   function captureDiffSelection(task) {
     if (!task.editor || !task.editor.isConnected || task.save.disabled) return clearDiffSelection(task);
@@ -895,51 +900,71 @@
     if (!validDiffRange(task.editor, range)) return clearDiffSelection(task);
     task.activeDiffRange = range.cloneRange();
     task.selectionLabel.textContent = '已框选局部 (' + Array.from(range.toString()).length + ' 字)';
-    task.selectionTools.hidden = false;
+    syncDiffSaveMode(task);
   }
-  // 在原 DOM 判断交集，再按相同顺序投影至克隆；不能把原 Range 用于克隆节点。
-  function projectPartialDiff(editor, range, target) {
-    var source = editor.querySelectorAll('.diff-del, .diff-add');
-    var nodes = target.querySelectorAll('.diff-del, .diff-add');
-    source.forEach(function (node, index) {
-      var isDelete = node.classList.contains('diff-del');
-      nodes[index].dataset.keep = range.intersectsNode(node) ?
-        String(node.dataset.keep === undefined ? !isDelete : node.dataset.keep === 'true') : String(isDelete);
-    });
-  }
+  // 只在原 DOM 计算字符边界；克隆逐叶投影，不以整个红绿块的交集替代字符交集。
   function extractPartialDiffText(diffBox, selectedRange) {
     if (!validDiffRange(diffBox, selectedRange)) throw new Error('请重新框选');
-    var clone = diffBox.cloneNode(true);
-    projectPartialDiff(diffBox, selectedRange, clone);
+    var clone = diffBox.cloneNode(true), source = [], targets = [], retainedEmptyBlocks = new Set();
+    function leaves(root, list) {
+      var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+      while (walker.nextNode()) {
+        var node = walker.currentNode;
+        if (node.nodeType === 3 || node.tagName === 'BR' ||
+            (!node.firstChild && /^(DIV|P|LI|PRE|BLOCKQUOTE|H[1-6]|UL|OL|SECTION|ARTICLE)$/.test(node.tagName))) list.push(node);
+      }
+    }
+    leaves(diffBox, source); leaves(clone, targets);
+    // 撤销祖先的整块裁决，去留改由各叶子的三段结果决定。
+    clone.querySelectorAll('[data-keep]').forEach(function (node) { node.removeAttribute('data-keep'); });
+    source.forEach(function (node, index) {
+      var diff = node.parentElement.closest('.diff-del, .diff-add');
+      if (diff && !diffBox.contains(diff)) diff = null;
+      var outside = !diff || diff.classList.contains('diff-del');
+      var inside = !diff || (diff.dataset.keep === undefined ? diff.classList.contains('diff-add') : diff.dataset.keep === 'true');
+      if (node.nodeType === 3) {
+        var text = node.nodeValue, length = text.length;
+        // 边界在本叶内时直接使用 UTF-16 偏移；元素边界按 DOM 顺序投影到叶首/尾。
+        var start = selectedRange.startContainer === node ? selectedRange.startOffset :
+          selectedRange.comparePoint(node, 0) < 0 ? length : 0;
+        var end = selectedRange.endContainer === node ? selectedRange.endOffset :
+          selectedRange.comparePoint(node, length) > 0 ? 0 : length;
+        if (end < start) end = start;
+        targets[index].nodeValue = (outside ? text.slice(0, start) : '') +
+          (inside ? text.slice(start, end) : '') + (outside ? text.slice(end) : '');
+      } else {
+        var parent = node.parentNode, at = Array.prototype.indexOf.call(parent.childNodes, node);
+        // BR 与原生空块没有字符；用前后 DOM 边界判断，不把仅贴边算入。
+        var selected = selectedRange.comparePoint(parent, at) !== 1 && selectedRange.comparePoint(parent, at + 1) !== -1;
+        var brRange = document.createRange(); brRange.selectNode(node);
+        selected = selected && selectedRange.compareBoundaryPoints(Range.END_TO_START, brRange) < 0 &&
+          selectedRange.compareBoundaryPoints(Range.START_TO_END, brRange) > 0;
+        if (!(selected ? inside : outside)) targets[index].remove();
+        else if (node.tagName !== 'BR') retainedEmptyBlocks.add(targets[index]);
+      }
+    });
+    // 整块被淘汰时连同内部空段落移除，避免空块规范化产生幽灵换行。
+    Array.from(clone.querySelectorAll('.diff-del, .diff-add')).reverse().forEach(function (node) {
+      var hasEmptyLine = Array.from(retainedEmptyBlocks).some(function (block) { return node.contains(block); });
+      if (!node.textContent && !node.querySelector('br') && !hasEmptyLine) node.remove();
+    });
     return extractMergedText(clone);
-  }
-  function focusDiffSelection(task) {
-    if (!validDiffRange(task.editor, task.activeDiffRange) || task.save.disabled) return;
-    projectPartialDiff(task.editor, task.activeDiffRange, task.editor);
-    notify('已保留框外原文');
   }
   function renderDiffTask(task, previousCard) {
     var result = diffTexts(task.left, task.right), card = el('article', 'pw-diff-card');
     var head = el('header', 'pw-bar'), title = el('strong', '', task.snippet ? '[局部片段] 保存至：' + task.name : '保存至模块：' + task.name);
-    var save = iconButton('check', '保存此模块', function () { saveEdited(task); });
-    save.appendChild(el('span', '', '保存此模块'));
+    var save = iconButton('check', '保存此模块', function () {
+      if (task.activeDiffRange) saveReviewTasks([task], false, task.activeDiffRange);
+      else saveEdited(task);
+    });
+    var saveLabel = el('span', '', '保存此模块'); save.appendChild(saveLabel);
+    save.addEventListener('mousedown', function (e) { if (e.button === 0) e.preventDefault(); });
     var copy = iconButton('copy', '复制比对结果（含红绿标记）', function () { copyDiffResult(task.editor); });
     copy.classList.add('pw-copy-diff');
-    var tools = el('div', 'pw-diff-selection'); tools.hidden = true;
-    var count = el('span', 'pw-diff-selection-count'); count.setAttribute('role', 'status');
-    var partial = iconButton('partialSave', '仅保存框选区域', function () { saveReviewTasks([task], false, task.activeDiffRange); });
-    partial.classList.add('pw-save-partial');
-    partial.setAttribute('aria-description', '框选内修改写入，框选外原文保留');
-    var focus = iconButton('focus', '聚焦框选区（忽略框外标红）', function () { focusDiffSelection(task); });
-    focus.classList.add('pw-focus-selection');
-    tools.append(count, focus, partial);
-    // 鼠标按下时保留原生选区；键盘激活也使用卡片内缓存的 Range。
-    [partial, focus].forEach(function (button) {
-      button.addEventListener('mousedown', function (e) { if (e.button === 0) e.preventDefault(); });
-    });
-    save.classList.add('pw-save-diff'); head.append(title, copy, tools, save);
+    var count = el('span', 'pw-diff-selection-count'); count.setAttribute('role', 'status'); count.hidden = true;
+    save.classList.add('pw-save-diff'); head.append(title, copy, count, save);
     var editor = createDiffEditor(); task.editor = editor; task.save = save; task.card = card;
-    task.activeDiffRange = null; task.selectionTools = tools; task.selectionLabel = count;
+    task.activeDiffRange = null; task.saveLabel = saveLabel; task.selectionLabel = count;
     editor.addEventListener('mouseup', function () { captureDiffSelection(task); });
     editor.addEventListener('keyup', function () { captureDiffSelection(task); });
     editor.addEventListener('input', function () { clearDiffSelection(task); });
@@ -1300,7 +1325,7 @@
   document.addEventListener('mousedown', function (e) {
     if (!review) return;
     review.forEach(function (task) {
-      if (!task.editor.contains(e.target) && !task.selectionTools.contains(e.target)) clearDiffSelection(task);
+      if (!task.editor.contains(e.target) && !task.save.contains(e.target)) clearDiffSelection(task);
     });
   }, true);
   document.addEventListener('mychat-preset-imported', function () {
