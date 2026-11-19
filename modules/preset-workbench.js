@@ -5,7 +5,7 @@
   if (!host) return;
   var dialog, panels = [], diffBox, diffRows, status, collapseInput;
   var sides = [{ presetId: '', moduleId: '', afterId: '' }, { presetId: '', moduleId: '', afterId: '' }];
-  var review = null, opener = null, undoButton, redoButton, drag = null;
+  var review = null, opener = null, undoButton, redoButton, saveAllButton, drag = null;
   var undoStack = [], redoStack = [], expanded = new Set();
   var selectedLeftIds = [], selectedRightIds = [], workbenchMode = 'iterate';
   var columns, iterationPane, pasteBox, fusionBar, fusionLeft, fusionRight, compareButton, modeButtons = [];
@@ -85,12 +85,13 @@
   function presetAt(list, side) { return list.find(function (p) { return p.id === sides[side].presetId; }); }
   function invalidate() {
     review = null;
+    if (saveAllButton) saveAllButton.disabled = true;
     if (diffRows) diffRows.querySelectorAll('.pw-save-diff').forEach(function (button) { button.disabled = true; });
   }
   function commit(list, preserveReview) {
-    // 完整库快照在宿主写入前入栈；失败不消耗历史或淘汰最早记录。
-    var history = undoStack.slice();
-    undoStack.push(JSON.parse(JSON.stringify(presets())));
+    // list 只改公共桥返回的副本；重新读取宿主旧库，绝不把修改稿当作撤销快照。
+    var previous = clone(presets()), history = undoStack.slice();
+    undoStack.push(previous);
     if (undoStack.length > 30) undoStack.shift();
     try {
       if (!host.applyPresetWorkbenchChanges(list)) throw new Error('保存失败');
@@ -285,9 +286,22 @@
       });
       editor.addEventListener('dragstart', function (e) { e.stopPropagation(); e.preventDefault(); });
       var bar = el('div', 'pw-actions');
-      bar.appendChild(iconButton('check', '保存修改', function () {
+      var saveText = iconButton('check', '保存文本框修改', function () {
+        var activeTask = review && review.find(function (task) {
+          return task.presetId === p.id && task.moduleId === m.id && task.editor && task.editor.isConnected;
+        });
+        if (activeTask) {
+          if (saveEdited(activeTask)) {
+            var latest = presets().find(function (item) { return item.id === p.id; });
+            var saved = latest && latest.modules.find(function (item) { return item.id === m.id; });
+            if (saved) editor.value = saved.content;
+          }
+          return;
+        }
         editModule(side, p.id, m, function (target) { if (target.content === editor.value) { notify('正文未修改'); return false; } target.content = editor.value; });
-      }));
+      });
+      saveText.classList.add('pw-save-text'); saveText.appendChild(el('span', '', '保存文本框修改'));
+      bar.appendChild(saveText);
       body.append(editor, bar); return;
     }
     wordGroups(m).forEach(function (group, groupIndex) {
@@ -730,14 +744,15 @@
       });
     }
     if (!tasks.length) return notify(tasks.matchError || '暂无可匹配文本模块');
-    diffRows.replaceChildren(); review = tasks;
+    diffRows.replaceChildren(); review = tasks; saveAllButton.disabled = false;
     tasks.forEach(renderDiffTask); diffBox.hidden = false; syncLayout();
     notify(tasks.length > 1 ? '多模块对比已就绪' : '对比已就绪');
   }
   function renderDiffTask(task) {
     var result = diffTexts(task.left, task.right), card = el('article', 'pw-diff-card');
-    var head = el('header', 'pw-bar'), title = el('strong', '', task.snippet ? '[局部片段对比] 所属模块：' + task.name : task.name);
+    var head = el('header', 'pw-bar'), title = el('strong', '', task.snippet ? '[局部片段] 保存至：' + task.name : '保存至模块：' + task.name);
     var save = iconButton('check', '保存此模块', function () { saveEdited(task); });
+    save.appendChild(el('span', '', '保存此模块'));
     var copy = iconButton('copy', '复制比对结果（含红绿标记）', function () { copyDiffResult(task.editor); });
     copy.classList.add('pw-copy-diff');
     save.classList.add('pw-save-diff'); head.append(title, copy, save);
@@ -805,24 +820,46 @@
     normalize(clone);
     return clone.textContent;
   }
-  function saveEdited(task) {
-    if (!review || review.indexOf(task) < 0 || task.save.disabled) return;
-    var list = presets(), p = list.find(function (item) { return item.id === task.presetId; });
-    var m = p && p.modules.find(function (item) { return item.id === task.moduleId; });
-    if (!m || m.contentType === 'wordlist' || (!task.snippet && JSON.stringify(m) !== task.original)) {
-      task.save.disabled = true; return notify('目标已变化，请重新对比');
+  function saveEdited(task) { return saveReviewTasks([task], false); }
+  function saveAllEdited() { return saveReviewTasks(review ? review.slice() : [], true); }
+  function saveReviewTasks(tasks, all) {
+    if (!review || !tasks.length) return false;
+    var list = presets(), updates = [];
+    // 先在独立副本中完成全部校验和裁决；任一目标失效时不提交任何模块。
+    for (var i = 0; i < tasks.length; i++) {
+      var task = tasks[i];
+      if (review.indexOf(task) < 0 || task.save.disabled || !task.editor || !task.editor.isConnected) return false;
+      var p = list.find(function (item) { return item.id === task.presetId; });
+      var m = p && p.modules.find(function (item) { return item.id === task.moduleId; });
+      if (!m || m.contentType === 'wordlist' || (!task.snippet && JSON.stringify(m) !== task.original)) {
+        task.save.disabled = true; notify('目标已变化，请重新对比'); return false;
+      }
+      var resolved = extractMergedText(task.editor), nextSnippet = null;
+      if (task.snippet) {
+        var fullText = m.content || '', at = locateSnippet(fullText, task.snippet);
+        if (at < 0) { task.save.disabled = true; notify('片段已变化，请重新划选'); return false; }
+        m.content = fullText.slice(0, at) + resolved + fullText.slice(at + task.snippet.selectedText.length);
+        nextSnippet = Object.assign({}, task.snippet, { startOffset: at, endOffset: at + resolved.length, selectedText: resolved });
+      } else m.content = resolved;
+      updates.push({ task: task, module: m, snippet: nextSnippet });
     }
-    var resolved = extractMergedText(task.editor);
-    if (task.snippet) {
-      var fullText = m.content || '', at = locateSnippet(fullText, task.snippet);
-      if (at < 0) { task.save.disabled = true; return notify('片段已变化，请重新划选'); }
-      m.content = fullText.slice(0, at) + resolved + fullText.slice(at + task.snippet.selectedText.length);
-    } else m.content = resolved;
-    if (commit(list, true)) {
-      task.original = JSON.stringify(m);
-      if (task.snippet) { task.save.disabled = true; clearSnippet(); }
-      notify('已保存到目标模块');
-    }
+    if (!commit(list, true)) return false;
+    updates.forEach(function (update) {
+      var task = update.task;
+      task.original = JSON.stringify(update.module);
+      if (update.snippet) {
+        var active = activeSnippetSelection;
+        if (active && active.presetId === task.presetId && active.moduleId === task.moduleId &&
+            active.startOffset === task.snippet.startOffset && active.selectedText === task.snippet.selectedText) {
+          Object.assign(active, update.snippet);
+          snippetLabel.textContent = '已锁定局部片段（' + Array.from(active.selectedText).length + ' 字）';
+        }
+        Object.assign(task.snippet, update.snippet);
+      }
+    });
+    // commit 的 render 已用最新库重建上方文本框；下方编辑器不重建，保留手调和红绿裁决。
+    notify(all ? '已将对比结果全部保存到对应模块' : '已保存到目标模块');
+    return true;
   }
   function build() {
     dialog = el('dialog', 'pw-dialog'); dialog.id = 'preset-workbench-modal'; dialog.setAttribute('aria-labelledby', 'pw-title');
@@ -945,10 +982,13 @@
     var collapseLabel = el('label', 'pw-check'); collapseInput = el('input'); collapseInput.type = 'checkbox';
     collapseInput.addEventListener('change', function () { diffRows.querySelectorAll('.pw-diff-rows').forEach(function (editor) { editor.classList.toggle('pw-collapse', collapseInput.checked); }); });
     collapseLabel.append(collapseInput, document.createTextNode('折叠未修改')); toolbar.appendChild(collapseLabel);
+    saveAllButton = iconButton('check', '保存全部对比结果', saveAllEdited);
+    saveAllButton.classList.add('pw-save-all'); saveAllButton.appendChild(el('span', '', '保存全部对比结果')); saveAllButton.disabled = true;
+    toolbar.appendChild(saveAllButton);
     var closeReview = iconButton('close', '收起对比', function () { invalidate(); diffRows.replaceChildren(); syncLayout(); });
-    closeReview.classList.add('pw-close-review'); toolbar.appendChild(closeReview); iterationPane.appendChild(toolbar);
+    closeReview.classList.add('pw-close-review'); toolbar.appendChild(closeReview);
     diffBox = el('section', 'pw-diff'); diffRows = el('div', 'pw-diff-results');
-    diffBox.appendChild(diffRows); iterationPane.appendChild(diffBox); columns.appendChild(iterationPane);
+    diffBox.append(toolbar, diffRows); iterationPane.appendChild(diffBox); columns.appendChild(iterationPane);
     var footer = el('footer', 'pw-foot'); status = el('span', 'pw-status'); status.setAttribute('role', 'status');
     footer.appendChild(status); dialog.appendChild(footer);
     function hideSnapshots() { panels.forEach(function (p) { p.snapshots.hidden = true; p.snapshotButton.setAttribute('aria-expanded', 'false'); }); }
