@@ -505,7 +505,7 @@
     return 2 * common / (a.length + b.length);
   }
   // 保留原始空行及换行，拼接输出可逐字还原输入。
-  function paragraphs(text) { return text.match(/[^\r\n]+(?:\r?\n(?![\t ]*\r?\n)[^\r\n]+)*(?:\r?\n[\t ]*)*|[\r\n]+/g) || []; }
+  function paragraphs(text) { return text.match(/[^\n]*\n|[^\n]+$/g) || []; }
   function tokens(text) {
     // 汉字及标点逐个独立，连续英文数字成词；不依赖分词器的词组边界。
     return text.match(/[a-zA-Z0-9]+|\s+|[^\s]/gu) || [];
@@ -524,6 +524,60 @@
       else push('del', a[i++]);
     }
     return ops;
+  }
+  // Hirschberg 分治：窗口只限制矩阵内存，不截断匹配范围，不丢失窗口边界的公共词句。
+  function lcsLengths(a, b) {
+    var prev = new Uint32Array(b.length + 1), next = new Uint32Array(b.length + 1);
+    for (var i = 0; i < a.length; i++) {
+      for (var j = 0; j < b.length; j++) next[j + 1] = a[i] === b[j] ? prev[j] + 1 : Math.max(prev[j + 1], next[j]);
+      var swap = prev; prev = next; next = swap; next.fill(0);
+    }
+    return prev;
+  }
+  function fineTokenOps(a, b) {
+    var direct = lcsOps(a, b, 160801);
+    if (direct) return direct;
+    var middle = Math.floor(a.length / 2);
+    // 单边极短时直接使用窄矩阵，避免分治不能继续缩小。
+    if (a.length < 2 || b.length < 2) return lcsOps(a, b, Infinity);
+    var front = lcsLengths(a.slice(0, middle), b);
+    var back = lcsLengths(a.slice(middle).reverse(), b.slice().reverse()), split = 0, best = -1;
+    for (var j = 0; j <= b.length; j++) {
+      var score = front[j] + back[b.length - j];
+      if (score > best) { best = score; split = j; }
+    }
+    return fineTokenOps(a.slice(0, middle), b.slice(0, split)).concat(fineTokenOps(a.slice(middle), b.slice(split)));
+  }
+  function clauseOps(a, b) {
+    var ca = a.match(/[^\n。；！？]*[\n。；！？]|[^\n。；！？]+$/gu) || [];
+    var cb = b.match(/[^\n。；！？]*[\n。；！？]|[^\n。；！？]+$/gu) || [];
+    // 无句界、句界太密或只有一侧有句界时，仍完整精细对齐，绝不整块降级。
+    if (ca.length < 2 || cb.length < 2 || ca.length * cb.length > 90000) return fineTokenOps(tokens(a), tokens(b));
+    var width = cb.length + 1, dp = new Float64Array((ca.length + 1) * width);
+    var scores = new Float64Array(ca.length * cb.length), pa = ca.map(profile), pb = cb.map(profile), i, j;
+    for (i = ca.length - 1; i >= 0; i--) for (j = cb.length - 1; j >= 0; j--) {
+      var s = ca[i] === cb[j] ? 2 : calculateSim(ca[i], cb[j], pa[i], pb[j]);
+      scores[i * cb.length + j] = s;
+      dp[i * width + j] = Math.max(dp[(i + 1) * width + j], dp[i * width + j + 1], s >= 0.20 ? s + dp[(i + 1) * width + j + 1] : -1);
+    }
+    var ops = [], pendingA = '', pendingB = '';
+    function flush() {
+      if (pendingA || pendingB) ops = ops.concat(fineTokenOps(tokens(pendingA), tokens(pendingB)));
+      pendingA = ''; pendingB = '';
+    }
+    i = 0; j = 0;
+    while (i < ca.length || j < cb.length) {
+      var score = i < ca.length && j < cb.length ? scores[i * cb.length + j] : 0;
+      if (score >= 0.20 && Math.abs(dp[i * width + j] - score - dp[(i + 1) * width + j + 1]) < 0.000001) {
+        // 修改子句暂存到下一个完全相同的锚点，允许句号增删造成的一对多重切分。
+        // 不在修改句边界强行截断，否则“必须写”等跨新旧句界骨架仍会丢失。
+        if (ca[i] === cb[j]) { flush(); ops.push({ type: 'same', text: ca[i] }); }
+        else { pendingA += ca[i]; pendingB += cb[j]; }
+        i++; j++;
+      } else if (j < cb.length && (i === ca.length || dp[i * width + j + 1] >= dp[(i + 1) * width + j])) pendingB += cb[j++];
+      else pendingA += ca[i++];
+    }
+    flush(); return ops;
   }
   function inlineDiff(a, b) {
     // 纯分段/空白变化走线性对齐，超长粘合段也不会因 LCS 限额退化为整段红绿。
@@ -551,14 +605,11 @@
     // 公共首尾先直通，长句删短也不受中间编辑矩阵上限影响。
     while (start < endA && start < endB && ta[start] === tb[start]) start++;
     while (endA > start && endB > start && ta[endA - 1] === tb[endB - 1]) { endA--; endB--; }
-    var ops = lcsOps(ta.slice(start, endA), tb.slice(start, endB), 180000);
-    if (!ops) ops = [{ type: 'del', text: ta.slice(start, endA).join('') }, { type: 'add', text: tb.slice(start, endB).join('') }];
+    var midA = ta.slice(start, endA), midB = tb.slice(start, endB);
+    var ops = midA.length <= 400 && midB.length <= 400 ? fineTokenOps(midA, midB) : clauseOps(midA.join(''), midB.join(''));
     if (start) ops.unshift({ type: 'same', text: ta.slice(0, start).join('') });
     if (endA < ta.length) ops.push({ type: 'same', text: ta.slice(endA).join('') });
-    // 两处变化之间仅一两个未改字符时，连为一个局部高亮区。
-    for (var i = 1; i < ops.length - 1; i++) {
-      if (ops[i].type === 'same' && Array.from(ops[i].text).length <= 2 && ops[i - 1].type !== 'same' && ops[i + 1].type !== 'same') ops[i].type = 'bridge';
-    }
+    // 即使仅一个公共字符也保留为 same，不把公共骨架染进红绿块。
     var groups = [];
     ops.forEach(function (op) {
       var same = op.type === 'same', last = groups[groups.length - 1];
@@ -568,18 +619,19 @@
     });
     return groups;
   }
-  // 只粘合按顺序完整落入对侧长段的邻段，保留原始分隔符而不额外制造换行。
-  function gluedParagraphCount(parts, at, target) {
-    var compact = function (text) { return text.replace(/\s+/g, ''); };
-    var whole = compact(target), first = compact(parts[at] || '');
-    if (!first || whole.length <= first.length || whole.indexOf(first) < 0) return 1;
-    var end = whole.indexOf(first) + first.length, count = 1;
+  // 只有无独立后续匹配且新增匹配字符超过该行六成，才允许跨行粘合。
+  function gluedParagraphCount(parts, at, opposite, targetAt) {
+    var compact = function (text) { return Array.from(text.replace(/\s+/g, '')); };
+    var target = compact(opposite[targetAt]), joined = compact(parts[at]), count = 1;
+    if (!target.length || !joined.length || joined.join('').includes(target.join('')) || at + 1 >= parts.length) return count;
+    var matched = target.join('').includes(joined.join('')) ? joined.length : lcsLengths(joined, target)[target.length];
     for (var k = at + 1; k < parts.length; k++) {
       var next = compact(parts[k]);
-      if (!next) continue;
-      var found = whole.indexOf(next, end);
-      if (found < 0) break;
-      end = found + next.length; count = k - at + 1;
+      if (!next.length) continue;
+      if (opposite.some(function (line, index) { return index > targetAt && calculateSim(parts[k], line) >= 0.35; })) break;
+      var candidate = joined.concat(next), increased = lcsLengths(candidate, target)[target.length];
+      if (increased - matched <= next.length * 0.60) break;
+      joined = candidate; matched = increased; count = k - at + 1;
     }
     return count;
   }
@@ -621,7 +673,8 @@
         var last = result[result.length - 1], start = result.length - 2;
         while (start > 0 && !result[start].left.trim() && !result[start].right.trim()) start--;
         var prev = result[start], tail = edge(prev, true), head = edge(last, false);
-        if (!tail || !head || tail.type === 'same' || head.type === 'same' ||
+        if ((prev.left.trim() && prev.right.trim() && last.left.trim() && last.right.trim()) ||
+            !tail || !head || tail.type === 'same' || head.type === 'same' ||
             !(redundantDiffText(tail.right, head.left) || redundantDiffText(tail.left, head.right))) break;
         var merged = result.slice(start), left = merged.map(function (p) { return p.left; }).join('');
         var right = merged.map(function (p) { return p.right; }).join('');
@@ -639,7 +692,7 @@
     }
     function glueCurrent() {
       if (i >= a.length || j >= b.length || a[i] === b[j]) return false;
-      var countA = gluedParagraphCount(a, i, b[j]), countB = gluedParagraphCount(b, j, a[i]);
+      var countA = gluedParagraphCount(a, i, b, j), countB = gluedParagraphCount(b, j, a, i);
       if (countA < 2 && countB < 2) return false;
       if (countA > 1) { row(a.slice(i, i + countA).join(''), b[j++], 'rewrite'); i += countA; }
       else { row(a[i++], b.slice(j, j + countB).join(''), 'rewrite'); j += countB; }
