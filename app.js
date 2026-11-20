@@ -16,6 +16,7 @@
   var TOOLBAR_COMPACT_KEY = 'mychat_toolbar_compact';
   var DESKTOP_SIDEBAR_KEY = 'mychat_desktop_sidebar_collapsed';
   var PLUGINS_CONFIG_KEY = 'mychat_plugins_config'; // 本机插件显示偏好，不参与云同步或备份
+  var PW_EXIT_DRAFT_KEY = 'mychat_pw_exit_draft'; // 工作台退出草稿，仅本机临时恢复，不同步或备份
   var toolbarOrder = {}, toolbarCompact = {}, isDraggingToolbar = false;
   var settingsDraft = { sync: null, chatFontSizeDesktop: 15, chatFontSizeMobile: 14 };
   var toolbarDefaults = {
@@ -911,6 +912,17 @@
     savePluginsConfig: function (data) {
       try { localStorage.setItem(PLUGINS_CONFIG_KEY, JSON.stringify(data)); return true; }
       catch (err) { console.warn('插件配置保存失败：', err); return false; }
+    },
+    getPresetWorkbenchDraft: function () {
+      try { return JSON.parse(localStorage.getItem(PW_EXIT_DRAFT_KEY) || 'null'); }
+      catch (err) { return null; }
+    },
+    savePresetWorkbenchDraft: function (data) {
+      try {
+        if (data === null) localStorage.removeItem(PW_EXIT_DRAFT_KEY);
+        else localStorage.setItem(PW_EXIT_DRAFT_KEY, JSON.stringify(data));
+        return true;
+      } catch (err) { console.warn('工作台草稿保存失败：', err); return false; }
     },
     // 独立轻量工具的数据读写：键名只由宿主统一管理
     getVocabRules: function () { return readStorageValue(VOCAB_RULES_KEY) || []; },
@@ -14363,6 +14375,7 @@
 
     function isOpen(element) {
       if (!element.isConnected || element.hidden || element.classList.contains('hidden')) return false;
+      if (element.matches('dialog')) return element.open;
       if (element.matches('.sidebar')) return isMobileView() && element.classList.contains('open');
       return getComputedStyle(element).display !== 'none' && getComputedStyle(element).visibility !== 'hidden';
     }
@@ -14383,7 +14396,7 @@
     }
 
     function syncOverlays() {
-      var elements = Array.from(document.querySelectorAll('.modal, .sidebar'));
+      var elements = Array.from(document.querySelectorAll('.modal, .sidebar, dialog'));
       openedOverlays.forEach(function (element) {
         if (elements.indexOf(element) < 0) elements.push(element);
       });
@@ -14402,10 +14415,10 @@
 
     var observer = new MutationObserver(function (records) {
       if (records.some(function (record) {
-        return record.type === 'childList' || record.target.matches('.modal, .sidebar');
+        return record.type === 'childList' || record.target.matches('.modal, .sidebar, dialog');
       })) syncOverlays();
     });
-    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'open'] });
     syncOverlays();
 
     window.addEventListener('popstate', function () {
@@ -14417,15 +14430,17 @@
       isHandlingPopState = true;
       try {
         var modals = openedOverlays.filter(function (element) {
-          return element.matches('.modal') && isOpen(element);
+          return element.matches('.modal, dialog') && isOpen(element);
         });
         // 同层级按最近打开顺序，跨层级按实际 z-index 优先。
         modals.sort(function (a, b) {
+          if (a.matches('dialog') !== b.matches('dialog')) return a.matches('dialog') ? 1 : -1;
           return (parseInt(getComputedStyle(a).zIndex, 10) || 0) - (parseInt(getComputedStyle(b).zIndex, 10) || 0);
         });
         var modal = modals[modals.length - 1];
         if (modal) {
-          if (modal === els.modal) closeSettings();
+          if (modal.matches('dialog')) modal.close();
+          else if (modal === els.modal) closeSettings();
           else {
             var closeButton = modal.querySelector('.preset-close, [data-action="close"], button[aria-label="关闭"], button[id$="-close"], button[id$="-close-btn"], button[id$="-cancel"]');
             if (closeButton) closeButton.click();

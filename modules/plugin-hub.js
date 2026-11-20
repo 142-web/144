@@ -6,7 +6,7 @@
   var registry = new Map();
   var config = readConfig();
   var modal, search, list, status, previousFocus;
-  var chat, observer, timer = 0, active = false;
+  var chat, observer, timer = 0, active = false, dialogueActive = false, periodActive = false;
   var pending = new Set();
   var bodySelector = '.bubble .md-body, .bubble .msg-text';
   var excluded = 'pre,code,a,textarea,input,script,style,details,summary,.cot-box,.cot-content,.plugin-dialogue-quote,button,svg,iframe,.tavern-sandbox-wrap,[contenteditable="true"]';
@@ -74,6 +74,11 @@
   }
   function processBody(body) {
     if (!chat.contains(body) || body.closest(excluded)) return;
+    if (periodActive) removePeriodBreaks(body);
+    if (dialogueActive) processDialogueBody(body);
+    if (periodActive) processPeriodBody(body);
+  }
+  function processDialogueBody(body) {
     var nodes = [];
     var walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
       acceptNode: function (node) {
@@ -126,7 +131,60 @@
     try { pending.forEach(processBody); }
     finally { pending.clear(); if (active) observe(); }
   }
-  function enableDialogue() {
+  function removePeriodBreaks(scope) {
+    var parents = new Set();
+    scope.querySelectorAll('.plugin-period-break').forEach(function (span) {
+      var parent = span.parentNode;
+      if (parent) { span.remove(); parents.add(parent); }
+    });
+    parents.forEach(function (parent) { parent.normalize(); });
+  }
+  function processPeriodBody(body) {
+    // 只接受明确的 AI 楼层；现宿主使用 .msg-ai，用户及未知角色一律跳过。
+    if (!body.closest('.msg-ai, .msg.assistant, .message.assistant, [data-role="assistant"]') ||
+        body.closest('.msg-user, .msg.user, .message.user, [data-role="user"]')) return;
+    var skip = excluded.replace(', .plugin-dialogue-quote', '').replace('.plugin-dialogue-quote,', '');
+    var groups = new Map();
+    var walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (node) {
+        return node.parentElement && !node.parentElement.closest(skip) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      }
+    });
+    while (walker.nextNode()) {
+      var node = walker.currentNode;
+      var block = node.parentElement.closest('p,li,blockquote,h1,h2,h3,h4,h5,h6,div') || body;
+      if (!body.contains(block)) block = body;
+      if (!groups.has(block)) groups.set(block, []);
+      groups.get(block).push(node);
+    }
+    groups.forEach(function (nodes, block) {
+      var text = '', offsets = [];
+      nodes.forEach(function (node) { offsets.push(text.length); text += node.data; });
+      var pattern = /。[”"]*/g, match, points = [];
+      while ((match = pattern.exec(text))) {
+        var at = match.index + match[0].length, rest = text.slice(at);
+        if (!rest.trim() || /^\s*\n/.test(rest)) continue;
+        var index = nodes.length - 1;
+        while (index > 0 && offsets[index] >= at) index--;
+        var target = nodes[index], offset = at - offsets[index];
+        // BR、嵌套块或禁区之间不是同一连续正文，不跨越这些边界换行。
+        var range = document.createRange(); range.setStart(target, offset);
+        var next = index;
+        while (next < nodes.length && !nodes[next].data.slice(next === index ? offset : 0).trim()) next++;
+        if (next >= nodes.length) continue;
+        range.setEnd(nodes[next], nodes[next].data.length);
+        var fragment = range.cloneContents();
+        if (fragment.querySelector('br,pre,code,a,details,textarea,input,script,style,div,p,li')) continue;
+        points.push({ node: target, offset: offset });
+      }
+      points.reverse().forEach(function (point) {
+        var range = document.createRange(); range.setStart(point.node, point.offset); range.collapse(true);
+        var span = document.createElement('span'); span.className = 'plugin-period-break'; span.setAttribute('aria-hidden', 'true');
+        range.insertNode(span);
+      });
+    });
+  }
+  function startObserver() {
     if (active) return;
     // 兼容标准 chat-box；现有宿主正文容器实际命名为 chat-area。
     chat = document.getElementById('chat-box') || document.getElementById('chat-area');
@@ -136,12 +194,18 @@
     collect(chat);
     flush();
   }
-  function disableDialogue() {
-    active = false;
+  function updateEffects() {
     if (observer) observer.disconnect();
     clearTimeout(timer); timer = 0; pending.clear();
-    unwrap(document);
+    removePeriodBreaks(document);
+    if (!dialogueActive) unwrap(document);
+    active = false;
+    if (dialogueActive || periodActive) startObserver();
   }
+  function enableDialogue() { dialogueActive = true; updateEffects(); }
+  function disableDialogue() { dialogueActive = false; updateEffects(); }
+  function enablePeriod() { periodActive = true; updateEffects(); }
+  function disablePeriod() { periodActive = false; updateEffects(); }
 
   function renderList() {
     list.replaceChildren();
@@ -220,7 +284,12 @@
   register({ id: 'dialogue_highlight', name: '人物对话美化',
     description: '将聊天正文里双引号（“...”和"..."）内的角色对话变为醒目护眼的橙色字体，方便区分对话与旁白。',
     summary: '双引号对话显示为橙色', iconSvg: quoteIcon, onEnable: enableDialogue, onDisable: disableDialogue });
-  // 纯 DOM 插件不注册空字符串钩子，由观察器覆盖用户、AI 及流式重绘。
+  register({ id: 'period_auto_newline', name: '句号自动换行',
+    description: '仅在前端显示时于AI回复的句号后自动换行并增加轻微间距，不修改实际保存的文本，也不影响发给AI的上下文。',
+    summary: 'AI句号换行，轻微间距',
+    iconSvg: svg('<path d="M20 5v6a4 4 0 0 1-4 4H4m4-4-4 4 4 4M4 5h10"/>'),
+    onEnable: enablePeriod, onDisable: disablePeriod });
+  // 纯 DOM 插件不注册空字符串钩子，由共享观察器覆盖会话、历史及流式重绘。
   var entryButton = document.getElementById('toolbox-plugins-btn');
   if (entryButton) entryButton.addEventListener('click', function () { window.MyChatPlugins.openModal(); });
 })();

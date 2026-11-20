@@ -11,6 +11,43 @@
   var columns, iterationPane, pasteBox, fusionBar, fusionLeft, fusionRight, compareButton, modeButtons = [];
   var activeSnippetSelection = null, snippetBar, snippetLabel;
   var search = { hits: [], current: -1, timer: null, presetId: '' };
+  var textDrafts = new Map(), opening = false, renderFrame = 0;
+  function draftKey(side, presetId, moduleId) { return JSON.stringify([side, presetId, moduleId]); }
+  function collectTextDrafts() {
+    panels.forEach(function (panel) {
+      panel.list.querySelectorAll('textarea.pw-content').forEach(function (editor) {
+        var key = draftKey(Number(editor.dataset.side), editor.dataset.presetId, editor.dataset.moduleId);
+        if (editor.value !== editor.dataset.savedText) textDrafts.set(key, {
+          side: Number(editor.dataset.side), presetId: editor.dataset.presetId, moduleId: editor.dataset.moduleId, text: editor.value
+        });
+        else textDrafts.delete(key);
+      });
+    });
+    var list = presets();
+    textDrafts.forEach(function (draft, key) {
+      var p = list.find(function (item) { return item.id === draft.presetId; });
+      var m = p && p.modules.find(function (item) { return item.id === draft.moduleId; });
+      if (!m || draft.text === String(m.content || '').replace(/\r\n?/g, '\n')) textDrafts.delete(key);
+    });
+  }
+  function saveExitDraft() {
+    collectTextDrafts();
+    var tasks = (review || []).filter(function (task) {
+      var p = presets().find(function (item) { return item.id === task.presetId; });
+      var m = p && p.modules.find(function (item) { return item.id === task.moduleId; });
+      return m && task.editor && task.editor.isConnected &&
+        extractMergedText(task.editor) !== (task.snippet ? task.snippet.selectedText : m.content);
+    }).map(function (task) {
+      return { presetId: task.presetId, moduleId: task.moduleId, text: extractMergedText(task.editor), snippet: task.snippet || null };
+    });
+    var external = panels[0].external.value;
+    if (review && review.length && !tasks.length) external = '';
+    var snapshot = textDrafts.size || external || tasks.length ? {
+      version: 1, timestamp: Date.now(), presetId: sides[0].presetId, sides: clone(sides), mode: workbenchMode,
+      drafts: Array.from(textDrafts.values()), external: external, tasks: tasks
+    } : null;
+    if (host.savePresetWorkbenchDraft && !host.savePresetWorkbenchDraft(snapshot)) notify('草稿保存失败');
+  }
   var searchResizeObserver = window.ResizeObserver ? new ResizeObserver(function (entries) {
     entries.forEach(function (entry) {
       var editor = entry.target, mirror = editor.previousElementSibling;
@@ -364,12 +401,12 @@
       chip.append(button, iconButton('close', '删除快捷模式', function () { change(true); })); panel.quickModes.appendChild(chip);
     });
   }
-  function editModule(side, presetId, original, change) {
+  function editModule(side, presetId, original, change, preserveReview) {
     var list = presets(), p = presetAt(list, side);
     var m = p && p.id === presetId && p.modules.find(function (item) { return item.id === original.id; });
     if (!m || JSON.stringify(m) !== JSON.stringify(original)) return notify('模块已变化，请重新展开');
     if (change(m) === false) return false;
-    return commit(list);
+    return commit(list, preserveReview);
   }
   function snapshotName() {
     var d = new Date(), pad = function (n) { return String(n).padStart(2, '0'); };
@@ -494,6 +531,10 @@
     body.appendChild(mode);
     if (m.contentType !== 'wordlist') {
       var editor = el('textarea', 'pw-content'); editor.value = m.content; editor.setAttribute('aria-label', '模块正文');
+      editor.dataset.side = side; editor.dataset.presetId = p.id; editor.dataset.moduleId = m.id;
+      editor.dataset.savedText = editor.value;
+      var draft = textDrafts.get(draftKey(side, p.id, m.id));
+      if (draft) editor.value = draft.text;
       editor.addEventListener('input', function () {
         if (side === 0) resetSearch();
         if (activeSnippetSelection && activeSnippetSelection.moduleId === m.id) { clearSnippet(); invalidate(); }
@@ -508,15 +549,18 @@
         var activeTask = review && review.find(function (task) {
           return task.presetId === p.id && task.moduleId === m.id && task.editor && task.editor.isConnected;
         });
-        if (activeTask) {
-          if (saveEdited(activeTask)) {
-            var latest = presets().find(function (item) { return item.id === p.id; });
-            var saved = latest && latest.modules.find(function (item) { return item.id === m.id; });
-            if (saved) editor.value = saved.content;
-          }
-          return;
+        var text = editor.value;
+        // 左框只提交本框正文，绝不读取右侧编辑器；成功后仅推进比对原文基线。
+        if (editModule(side, p.id, m, function (target) {
+          if (String(target.content || '').replace(/\r\n?/g, '\n') === text) { notify('正文未修改'); return false; }
+          target.content = text;
+        }, true) && activeTask) {
+          activeTask.original = JSON.stringify(presets().find(function (item) { return item.id === p.id; }).modules.find(function (item) { return item.id === m.id; }));
+          activeTask.left = text; // 实际 before 字段为 left。
+          if (activeTask.snippet) { activeTask.snippet = null; clearSnippet(); }
+          clearDiffSelection(activeTask); refreshDiffEditor(activeTask);
+          activeTask.save.disabled = activeTask.left === activeTask.right;
         }
-        editModule(side, p.id, m, function (target) { if (target.content === editor.value) { notify('正文未修改'); return false; } target.content = editor.value; });
       });
       saveText.classList.add('pw-save-text'); saveText.appendChild(el('span', '', '保存文本框修改'));
       bar.appendChild(saveText);
@@ -873,6 +917,9 @@
     return { rows: healDiffRows(rows), fast: fast };
   }
   function render() {
+    collectTextDrafts();
+    var scrolls = panels.map(function (panel) { return panel.list.scrollTop; });
+    cancelAnimationFrame(renderFrame);
     resetSearch();
     if (searchResizeObserver) searchResizeObserver.disconnect();
     var list = presets();
@@ -967,6 +1014,8 @@
     });
     syncLayout();
     if (search.bar && !search.bar.hidden) runSearch();
+    function restoreScroll() { panels.forEach(function (panel, i) { panel.list.scrollTop = scrolls[i]; }); }
+    restoreScroll(); renderFrame = requestAnimationFrame(restoreScroll);
   }
   function calculateSim(a, b, pa, pb) {
     a = a.trim(); b = b.trim();
@@ -1564,7 +1613,8 @@
     dialog.addEventListener('cancel', function (e) { if (panels.some(function (p) { return !p.snapshots.hidden; })) { e.preventDefault(); hideSnapshots(); } });
     window.addEventListener('resize', function () { panels.forEach(function (_, side) { positionSnapshots(side); }); });
     dialog.addEventListener('scroll', function () { panels.forEach(function (_, side) { positionSnapshots(side); }); });
-    dialog.addEventListener('close', function () { closeSearch(false); clearSnippet(); hideSnapshots(); clearDrag(); invalidate(); if (opener && opener.isConnected) opener.focus(); });
+    // 所有关闭路径（含原生 Escape、宿主返回及直接 close）在清理前统一捕获。
+    dialog.addEventListener('close', function () { saveExitDraft(); closeSearch(false); clearSnippet(); hideSnapshots(); clearDrag(); invalidate(); if (opener && opener.isConnected) opener.focus(); });
     dialog.addEventListener('click', function (e) { if (e.target === dialog) { var r = dialog.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) dialog.close(); } });
     document.body.appendChild(dialog);
   }
@@ -1646,14 +1696,59 @@
     });
     return diffRows;
   }
-  function open() {
-    if (!dialog) build();
-    opener = document.activeElement; clearSnippet(); invalidate(); render();
-    panels.forEach(function (p, side) { clearSelection(side); p.quickForm.hidden = true; });
-    workbenchMode = 'iterate'; panels[0].external.value = '';
-    diffBox.hidden = false; diffRows.replaceChildren(); render(); notify('就绪');
-    if (host.closeInputToolbox) host.closeInputToolbox();
-    if (!dialog.open) dialog.showModal();
+  async function open() {
+    if (opening) return;
+    opening = true;
+    try {
+      if (!dialog) build();
+      opener = document.activeElement;
+      var snapshot = host.getPresetWorkbenchDraft ? host.getPresetWorkbenchDraft() : null;
+      var valid = snapshot && snapshot.version === 1 && Number.isFinite(snapshot.timestamp) &&
+        typeof snapshot.presetId === 'string' && Array.isArray(snapshot.drafts) && typeof snapshot.external === 'string';
+      var restore = false;
+      if (valid) {
+        var message = '检测到上次退出时有未保存的工作台进度，是否恢复？';
+        restore = await (window.showAppConfirm ? window.showAppConfirm(message, {
+          title: '恢复进度', confirmText: '恢复', cancelText: '放弃'
+        }) : window.confirm(message));
+      }
+      textDrafts.clear();
+      panels.forEach(function (p, side) { p.list.replaceChildren(); clearSelection(side); p.quickForm.hidden = true; });
+      clearSnippet(); invalidate(); workbenchMode = restore && snapshot.mode === 'merge' ? 'merge' : 'iterate';
+      panels[0].external.value = restore ? snapshot.external : '';
+      if (restore) {
+        if (Array.isArray(snapshot.sides)) snapshot.sides.slice(0, 2).forEach(function (s, i) {
+          if (s && typeof s.presetId === 'string') sides[i].presetId = s.presetId;
+        });
+        sides[0].presetId = snapshot.presetId;
+        snapshot.drafts.forEach(function (draft) {
+          if (!draft || (draft.side !== 0 && draft.side !== 1) || typeof draft.presetId !== 'string' ||
+              typeof draft.moduleId !== 'string' || typeof draft.text !== 'string') return;
+          textDrafts.set(draftKey(draft.side, draft.presetId, draft.moduleId), draft);
+          expanded.add(draft.side + ':' + draft.presetId + ':' + draft.moduleId);
+        });
+      }
+      diffBox.hidden = false; diffRows.replaceChildren(); render();
+      if (restore && Array.isArray(snapshot.tasks)) {
+        review = [];
+        snapshot.tasks.forEach(function (saved) {
+          if (!saved || typeof saved.text !== 'string') return;
+          var p = presets().find(function (item) { return item.id === saved.presetId; });
+          var m = p && p.modules.find(function (item) { return item.id === saved.moduleId; });
+          if (!m) return;
+          var task = { presetId: p.id, moduleId: m.id, name: m.name || '未命名模块', original: JSON.stringify(m), left: m.content || '', right: saved.text };
+          if (saved.snippet && typeof saved.snippet.selectedText === 'string' && locateSnippet(task.left, saved.snippet) >= 0) {
+            task.snippet = saved.snippet; task.left = saved.snippet.selectedText;
+          } else if (saved.snippet) return;
+          review.push(task); renderDiffTask(task);
+        });
+        saveAllButton.disabled = !review.length; syncLayout();
+      }
+      if (host.savePresetWorkbenchDraft) host.savePresetWorkbenchDraft(null);
+      notify(restore ? '已恢复草稿' : '就绪');
+      if (host.closeInputToolbox) host.closeInputToolbox();
+      if (!dialog.open) dialog.showModal();
+    } finally { opening = false; }
   }
   // 全局监听只注册一次；仅巡检当前 review，不为每张卡片遗留 document 监听器。
   document.addEventListener('selectionchange', function () {

@@ -2895,7 +2895,8 @@ body {
   animation: modal-in 0.16s ease-out;
 }
 
-/* === [ANCHOR: CSS_PLUGIN_HUB] 插件库与正文对话高亮 === */
+/* === [ANCHOR: CSS_PLUGIN_HUB] 插件库与正文显示修饰 === */
+.plugin-period-break { display: block; height: 0.45em; }
 .plugin-dialogue-quote { color: #fb923c; }
 body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 .plugin-hub-modal { z-index: 68; backdrop-filter: blur(5px); }
