@@ -7525,6 +7525,24 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 .pw-snapshot-label strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pw-snapshot-label time { color: var(--text-dim); font-size: 10px; overflow-wrap: anywhere; }
 .pw-dialog .pw-content { display: block; width: 100%; min-height: 150px; resize: vertical; line-height: 1.6; }
+.pw-search-bar { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; min-width: 0; padding: 4px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); }
+.pw-dialog .pw-search-bar > input { flex: 1 1 0; width: 0; padding: 5px 6px; }
+.pw-search-count { flex: 0 0 auto; white-space: nowrap; color: var(--text-dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+.pw-dialog .pw-search-bar .pw-icon { flex-basis: 24px; width: 24px; height: 26px; padding: 3px; border: 0; }
+.pw-search-toggle[aria-expanded="true"] svg { transform: none; }
+.pw-search-hit { padding: 0; border: 0; border-radius: 2px; background: rgb(245 185 55 / 28%); color: inherit; font: inherit; }
+.pw-search-hit.is-current { background: #f59a35; color: #251306; }
+.pw-content-wrap { position: relative; min-width: 0; background: var(--bg); border-radius: 6px; }
+.pw-dialog .pw-content-wrap .pw-content, .pw-search-backdrop { box-sizing: border-box; margin: 0; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; word-break: normal; tab-size: 8; }
+.pw-dialog .pw-content-wrap .pw-content { position: relative; z-index: 1; line-height: 20px; }
+.pw-search-backdrop { position: absolute; top: 0; left: 0; overflow: hidden; border: 1px solid transparent; border-radius: 6px; pointer-events: none; color: var(--text); background: var(--bg); }
+.pw-dialog .pw-content.pw-search-transparent { background: transparent; color: transparent; caret-color: var(--text); -webkit-text-fill-color: transparent; }
+.pw-content.pw-search-transparent::selection { background: rgb(95 150 220 / 35%); }
+@media (max-width: 480px) {
+  .pw-search-bar { flex-wrap: wrap; }
+  .pw-dialog .pw-search-bar > input { flex-basis: 100%; width: 100%; }
+  .pw-search-count { flex: 1 1 0; }
+}
 .pw-module-body > .pw-actions { justify-content: flex-end; margin-top: 6px; }
 .pw-icon[aria-expanded="true"] svg { transform: rotate(180deg); }
 .pw-dialog .pw-undo { flex: 0 0 auto; width: auto; gap: 5px; white-space: nowrap; font-size: 12px; }
