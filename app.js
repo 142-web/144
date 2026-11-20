@@ -17,6 +17,7 @@
   var DESKTOP_SIDEBAR_KEY = 'mychat_desktop_sidebar_collapsed';
   var PLUGINS_CONFIG_KEY = 'mychat_plugins_config'; // 本机插件显示偏好，不参与云同步或备份
   var PW_EXIT_DRAFT_KEY = 'mychat_pw_exit_draft'; // 工作台退出草稿，仅本机临时恢复，不同步或备份
+  var PW_DIFF_VIEW_MODE_KEY = 'mychat_pw_diff_view_mode'; // 本机对比视图，不同步或备份
   var toolbarOrder = {}, toolbarCompact = {}, isDraggingToolbar = false;
   var settingsDraft = { sync: null, chatFontSizeDesktop: 15, chatFontSizeMobile: 14 };
   var toolbarDefaults = {
@@ -912,6 +913,15 @@
     savePluginsConfig: function (data) {
       try { localStorage.setItem(PLUGINS_CONFIG_KEY, JSON.stringify(data)); return true; }
       catch (err) { console.warn('插件配置保存失败：', err); return false; }
+    },
+    getPresetWorkbenchDiffViewMode: function () {
+      try { return localStorage.getItem(PW_DIFF_VIEW_MODE_KEY) === 'split' ? 'split' : 'inline'; }
+      catch (err) { return 'inline'; }
+    },
+    savePresetWorkbenchDiffViewMode: function (mode) {
+      if (mode !== 'inline' && mode !== 'split') return false;
+      try { localStorage.setItem(PW_DIFF_VIEW_MODE_KEY, mode); return true; }
+      catch (err) { console.warn('对比视图保存失败：', err); return false; }
     },
     getPresetWorkbenchDraft: function () {
       try { return JSON.parse(localStorage.getItem(PW_EXIT_DRAFT_KEY) || 'null'); }

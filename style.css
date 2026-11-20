@@ -7608,6 +7608,19 @@ body.dark-mode .pw-dialog .pw-icon.is-saved-flash { color: #79d9a5; border-color
 .pw-diff-rows .diff-del[data-keep="true"] { color: inherit; background: transparent; }
 .pw-diff-rows .diff-add[data-keep="false"] { color: var(--text-dim); background: transparent; }
 .pw-collapse .pw-same { display: none; }
+.pw-diff-view-switch { display: inline-flex; flex: 0 0 auto; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 7px; }
+.pw-dialog .pw-diff-view-switch .pw-icon { padding: 4px 6px; border-color: transparent; border-radius: 4px; }
+.pw-dialog .pw-diff-view-switch [aria-pressed="true"] { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--panel)); border-color: var(--accent); }
+.pw-diff-split { display: grid; grid-template-columns: 1fr 1fr; min-width: 0; min-height: 80px; max-height: 350px; overflow-y: auto; overflow-x: hidden; border: 1px solid var(--border); border-radius: 8px; font: 12px/1.7 ui-monospace, Consolas, monospace; }
+.pw-diff-split[hidden], .pw-diff-rows[hidden] { display: none; }
+.pw-split-row { display: contents; }
+.pw-split-heading, .pw-split-cell { box-sizing: border-box; min-width: 0; padding: 8px; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
+.pw-split-heading { position: sticky; top: 0; z-index: 1; color: var(--text-dim); background: var(--panel); border-bottom: 1px solid var(--border); font-weight: 600; }
+.pw-split-heading:first-child, .pw-split-cell:first-child { border-right: 1px solid var(--border); }
+.pw-split-cell { border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.pw-split-empty { background: repeating-linear-gradient(135deg, transparent, transparent 5px, color-mix(in srgb, var(--border) 28%, transparent) 5px, color-mix(in srgb, var(--border) 28%, transparent) 6px); }
+.pw-diff-split .diff-del { color: #d34e57; background: rgb(211 78 87 / 13%); }
+.pw-diff-split .diff-add { color: #238557; background: rgb(36 156 98 / 17%); }
 .pw-foot { flex-shrink: 0; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 8px; font-size: 12px; }
 .pw-foot label { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); }
 .pw-status { color: var(--text-dim); }
