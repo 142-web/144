@@ -2895,6 +2895,34 @@ body {
   animation: modal-in 0.16s ease-out;
 }
 
+/* === [ANCHOR: CSS_PLUGIN_HUB] 插件库与正文对话高亮 === */
+.plugin-dialogue-quote { color: #fb923c; }
+body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
+.plugin-hub-modal { z-index: 68; backdrop-filter: blur(5px); }
+.plugin-hub-modal.hidden { display: none; }
+.modal-card.plugin-hub-card { width: 260px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 14px; display: flex; flex-direction: column; gap: 12px; color: var(--text); overflow: hidden; }
+.plugin-hub-card header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.plugin-hub-card h2 { margin: 0; font-size: 15px; }
+.plugin-hub-card header button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-dim); cursor: pointer; }
+.plugin-hub-card header button:hover { color: var(--text); background: var(--quote-bg); }
+.plugin-hub-search { display: flex; align-items: center; gap: 7px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); color: var(--text-dim); }
+.plugin-hub-search svg { flex-shrink: 0; }
+.plugin-hub-search:focus-within { border-color: var(--accent); }
+.plugin-hub-search input { min-width: 0; width: 100%; padding: 0; border: 0; outline: none; background: transparent; color: var(--text); font: inherit; font-size: 13px; }
+.plugin-hub-list { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.plugin-hub-item { display: flex; align-items: center; gap: 8px; padding: 10px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--quote-bg); }
+.plugin-hub-icon { display: grid; place-items: center; color: var(--text-dim); flex: 0 0 18px; }
+.plugin-hub-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.plugin-hub-copy strong { font-size: 13px; font-weight: 600; }
+.plugin-hub-copy p { margin: 4px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-dim); }
+.plugin-hub-toggle { appearance: none; -webkit-appearance: none; flex: 0 0 30px; width: 30px; height: 18px; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--text-dim); cursor: pointer; position: relative; transition: background .15s; }
+.plugin-hub-toggle::before { content: ''; position: absolute; width: 12px; height: 12px; left: 2px; top: 2px; background: #fff; border-radius: 50%; transition: transform .15s; }
+.plugin-hub-toggle:checked { background: var(--accent); border-color: var(--accent); }
+.plugin-hub-toggle:checked::before { transform: translateX(12px); }
+.plugin-hub-toggle:focus-visible, .plugin-hub-card header button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.plugin-hub-empty, .plugin-hub-status { margin: 0; color: var(--text-dim); font-size: 12px; line-height: 1.5; }
+.plugin-hub-status:empty { display: none; }
+
 /* === [ANCHOR: CSS_EXTERNAL_IMPORT] 外部对话导入紧凑弹窗 === */
 .external-import-modal[hidden] { display: none; }
 .external-import-modal { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 12px; background: rgba(0,0,0,.38); }

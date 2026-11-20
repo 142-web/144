@@ -15,6 +15,7 @@
   var TOOLBAR_ORDER_KEY = 'mychat_toolbar_order';
   var TOOLBAR_COMPACT_KEY = 'mychat_toolbar_compact';
   var DESKTOP_SIDEBAR_KEY = 'mychat_desktop_sidebar_collapsed';
+  var PLUGINS_CONFIG_KEY = 'mychat_plugins_config'; // 本机插件显示偏好，不参与云同步或备份
   var toolbarOrder = {}, toolbarCompact = {}, isDraggingToolbar = false;
   var settingsDraft = { sync: null, chatFontSizeDesktop: 15, chatFontSizeMobile: 14 };
   var toolbarDefaults = {
@@ -902,6 +903,15 @@
     },
     getRegexRules: getRegexRules,
     saveRegexRules: saveRegexRules,
+    // 插件偏好仅在本机读写，不触碰云端时间戳。
+    getPluginsConfig: function () {
+      try { return JSON.parse(localStorage.getItem(PLUGINS_CONFIG_KEY) || '{}'); }
+      catch (err) { return {}; }
+    },
+    savePluginsConfig: function (data) {
+      try { localStorage.setItem(PLUGINS_CONFIG_KEY, JSON.stringify(data)); return true; }
+      catch (err) { console.warn('插件配置保存失败：', err); return false; }
+    },
     // 独立轻量工具的数据读写：键名只由宿主统一管理
     getVocabRules: function () { return readStorageValue(VOCAB_RULES_KEY) || []; },
     saveVocabRules: function (list) {
