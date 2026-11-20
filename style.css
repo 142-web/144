@@ -1811,10 +1811,25 @@ body {
   margin-bottom: 0 !important;
 }
 .cloud-sync-controls, .cloud-sync-actions {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
 }
-.cloud-sync-controls { justify-content: space-between; margin: 12px 0; }
-.cloud-sync-controls label { display: inline-flex; align-items: center; gap: 6px; }
+.cloud-sync-controls { margin: 12px 0 8px; }
+.cloud-sync-controls > label { flex-shrink: 0; }
+.cloud-sync-actions { min-width: 0; }
+.cloud-sync-controls label, .cloud-cleanup-control label {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.cloud-sync-action {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 999px;
+  background: transparent; color: inherit; font: inherit; font-size: 12px;
+  white-space: nowrap; cursor: pointer;
+}
+.cloud-sync-action svg { flex-shrink: 0; width: 16px; height: 16px; }
+.cloud-sync-action:hover { background: var(--ai-bg); }
+.cloud-sync-action:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.cloud-cleanup-control { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin-bottom: 14px; }
+.cloud-cleanup-hint { color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 
 /* 沙盒与操作栏共享透明外壳，只有普通正文保留气泡底板。 */
 .msg.ai .bubble.has-sandbox,

@@ -2758,6 +2758,9 @@
   }
 
   window.MemorySummaryModule = {
+    // 共用原任务卡样式与完成淡出生命周期；无 context 时仅显示 HUD。
+    createHudTask: createTask,
+    updateHudTask: updateTask,
     compactMemorySnapshots: compactMemorySnapshots,
     migrateLegacyMemory: migrateLegacyMemory,
     previewNextSummaryPayload: previewNextSummaryPayload,

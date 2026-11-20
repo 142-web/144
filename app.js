@@ -104,6 +104,7 @@
     s3AccessKey: '',
     s3SecretKey: '',
     autoSync: false,
+    cloudHistoryPauseCleanup: false,
     chatFontSizeDesktop: 15,
     chatFontSizeMobile: 14
   };
@@ -5275,7 +5276,7 @@
       prevBtn.title = '上一分支';
       prevBtn.setAttribute('aria-label', '上一分支');
       prevBtn.innerHTML = ACTION_ICONS['swipe-prev'];
-      if (swipeIndex <= 0 || isCurrentActiveChannelGenerating()) prevBtn.disabled = true;
+      if (swipeIndex <= 0) prevBtn.disabled = true;
 
       var countEl = document.createElement('span');
       countEl.className = 'msg-swipe-count';
@@ -5289,7 +5290,7 @@
       nextBtn.title = '下一分支';
       nextBtn.setAttribute('aria-label', '下一分支');
       nextBtn.innerHTML = ACTION_ICONS['swipe-next'];
-      if (swipeIndex >= msg.swipes.length - 1 || isCurrentActiveChannelGenerating()) nextBtn.disabled = true;
+      if (swipeIndex >= msg.swipes.length - 1) nextBtn.disabled = true;
 
       nav.appendChild(prevBtn);
       nav.appendChild(countEl);
@@ -5331,7 +5332,7 @@
    */
   function switchMessageSwipe(index, delta) {
     var session = getCurrentSession();
-    if (!session || isCurrentActiveChannelGenerating()) return;
+    if (!session) return;
     var msg = session.messages[index];
     if (!msg || !Array.isArray(msg.swipes) || msg.swipes.length < 2) return;
 
@@ -6086,6 +6087,10 @@
     task.bubbleRefs = bubble;
     if (task.bindBubble) task.bindBubble(bubble);
     bubble._finalized = false;
+    if (task.isViewingTarget && !task.isViewingTarget()) {
+      bubble.classList.remove('streaming');
+      return;
+    }
     ensureBubbleParts(bubble);
     bubble.classList.toggle('streaming', task.isStreamMode);
     if (task.latestRender) renderAssistantBubble(bubble, task.latestRender, task.isStreamMode);
@@ -6471,6 +6476,7 @@
       bubble._rafPending = false;
       // 流式已结束（最终态已渲染）：丢弃迟到的帧回调，避免思维链被重新展开
       if (bubble._finalized || !bubble.isConnected) return;
+      if (bubble._canRenderStream && !bubble._canRenderStream()) return;
       renderAssistantBubble(bubble, bubble._latestRender, true);
     });
   }
@@ -6761,6 +6767,7 @@
     config.syncToken = typeof saved.syncToken === 'string' ? saved.syncToken.trim() : '';
     config.gistId = typeof saved.gistId === 'string' ? saved.gistId.trim() : '';
     config.autoSync = saved.autoSync === true;
+    config.cloudHistoryPauseCleanup = saved.cloudHistoryPauseCleanup === true;
     normalizeDisplaySettings(config, saved);
     toolbarOrder = normalizeToolbarOrder(readStorageValue(TOOLBAR_ORDER_KEY));
     toolbarCompact = normalizeToolbarCompact(readStorageValue(TOOLBAR_COMPACT_KEY));
@@ -8303,6 +8310,7 @@
     if (els.cfgSyncToken) els.cfgSyncToken.value = config.syncToken;
     if (els.cfgGistId) els.cfgGistId.value = config.gistId;
     document.getElementById('cfg-auto-sync').checked = config.autoSync === true;
+    document.getElementById('cfg-cloud-history-pause-cleanup').checked = config.cloudHistoryPauseCleanup === true;
     settingsDraft.sync = getSyncConfig();
     S3_CONFIG_FIELDS.forEach(function (key) { document.getElementById(s3FieldId(key)).value = config[key]; });
     updateSyncProviderFields();
@@ -8574,20 +8582,6 @@
   function syncStreamingUiState() {
     var busy = updateSendButtonState();
 
-    // 续写提示跟随当前通道，切换会话时不串到其他回复。
-    var currentTask = getCurrentSession() && activeGenerationMap.get(generationKey(getCurrentSession().id, getActiveSubChatId(getCurrentSession())));
-    var continuationStatus = document.getElementById('anti-truncate-status');
-    if (currentTask && !currentTask.finished && currentTask.continuationStatus && els.chatArea) {
-      if (!continuationStatus) {
-        continuationStatus = document.createElement('div');
-        continuationStatus.id = 'anti-truncate-status';
-        continuationStatus.className = 'hint';
-        continuationStatus.setAttribute('role', 'status');
-        els.chatArea.appendChild(continuationStatus);
-      }
-      continuationStatus.textContent = currentTask.continuationStatus;
-    } else if (continuationStatus) continuationStatus.remove();
-
     // 只按当前通道禁用重答；其他通道的生成不阻塞此视图。
     if (els.chatArea) {
       var regenBtns = els.chatArea.querySelectorAll('.msg-action-btn[data-role="regen"]');
@@ -8600,7 +8594,7 @@
         var msg = session && row && session.messages[Number(row.getAttribute('data-index'))];
         if (!msg || !Array.isArray(msg.swipes)) return;
         var index = normalizeSwipeIndex(msg);
-        btn.disabled = busy || (btn.getAttribute('data-role') === 'swipe-prev' ? index <= 0 : index >= msg.swipes.length - 1);
+        btn.disabled = btn.getAttribute('data-role') === 'swipe-prev' ? index <= 0 : index >= msg.swipes.length - 1;
       });
     }
   }
@@ -11055,6 +11049,21 @@
     if (!assistantMsg.id) assistantMsg.id = 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
     task.assistantMsg = assistantMsg;
     task.assistantMsgId = assistantMsg.id;
+    // 生成目标固定在入口分支，顶层字段只镜像用户当前阅读的分支。
+    var targetSwipeIndex = Array.isArray(assistantMsg.swipes) && assistantMsg.swipes.length
+      ? normalizeSwipeIndex(assistantMsg) : null;
+    task.targetSwipeIndex = targetSwipeIndex;
+    var responseMsg = targetSwipeIndex === null ? assistantMsg : assistantMsg.swipes[targetSwipeIndex];
+    if (targetSwipeIndex !== null) {
+      responseMsg.content = assistantMsg.content;
+      ['reasoning', 'nativeReasoning', 'tagReasoning', 'generationError'].forEach(function (key) { delete responseMsg[key]; });
+    }
+    task.isViewingTarget = function () {
+      return targetSwipeIndex === null || assistantMsg.swipeIndex === targetSwipeIndex;
+    };
+    var syncResponseView = function () {
+      if (targetSwipeIndex !== null && task.isViewingTarget()) applySwipeToMessage(assistantMsg);
+    };
     var targetIndex = targetMessages.indexOf(assistantMsg);
 
     // 重绘消息区：后续楼层保持原位显示，楼层号按最新数组顺序自动重算
@@ -11062,7 +11071,11 @@
     // 后台使用脱离文档的兜底节点；切回重绘时同步更新闭包目标。
     var bubble = document.createElement('div');
     ensureBubbleParts(bubble);
-    task.bindBubble = function (node) { bubble = node; };
+    task.bindBubble = function (node) {
+      if (bubble && bubble !== node) bubble._finalized = true;
+      bubble = node;
+      bubble._canRenderStream = task.isViewingTarget;
+    };
     if (isCurrentSession(targetSession, targetSubChatId)) {
       renderMessages({ keepScroll: keepScroll, focusIndex: targetIndex });
     }
@@ -11094,13 +11107,13 @@
       nonStreamTimer = setInterval(function () {
         waitedSec++;
         task.waitText = '等待响应… (' + waitedSec + 's)';
-        if (isCurrentSession(targetSession, targetSubChatId) && bubble.isConnected) {
+        if (isCurrentSession(targetSession, targetSubChatId) && task.isViewingTarget() && bubble.isConnected) {
           bubble._mdBody.style.display = '';
           bubble._mdBody.textContent = task.waitText;
         }
       }, 1000);
 
-      if (!keepScroll && isCurrentSession(targetSession, targetSubChatId)) scrollToBottom();
+      if (!keepScroll && task.isViewingTarget() && isCurrentSession(targetSession, targetSubChatId)) scrollToBottom();
     }
 
     // 统计信息收集：Token 用量与请求耗时
@@ -11260,15 +11273,16 @@
         bubble.classList.remove('streaming');
 
         // 非流式整体返回时同步写入会话数据（按保留设置回显预输入）
-        var fullParsed = setAssistantResponse(assistantMsg, stripAntiTruncateTag(stripChatTitle(answer)), reasoning);
-        if (!fullParsed.inThink) assistantMsg.content = withPrefill(assistantMsg.content);
+        var fullParsed = setAssistantResponse(responseMsg, stripAntiTruncateTag(stripChatTitle(answer)), reasoning);
+        if (!fullParsed.inThink) responseMsg.content = withPrefill(responseMsg.content);
         session.updatedAt = Date.now();
+        syncResponseView();
         scheduleSave();
 
         // 渲染前清空「上次渲染缓存」标记，确保正文 100% 重新渲染
         bubble._mdBody._lastHtml = null;
-        task.latestRender = { content: assistantMsg.content, reasoning: assistantMsg.reasoning || '', nativeReasoning: assistantMsg.nativeReasoning || '', tagReasoning: assistantMsg.tagReasoning || '' };
-        if (isCurrentSession(targetSession, targetSubChatId) && bubble.isConnected) {
+        task.latestRender = { content: responseMsg.content, reasoning: responseMsg.reasoning || '', nativeReasoning: responseMsg.nativeReasoning || '', tagReasoning: responseMsg.tagReasoning || '' };
+        if (isCurrentSession(targetSession, targetSubChatId) && task.isViewingTarget() && bubble.isConnected) {
           renderAssistantBubble(bubble, task.latestRender, false);
         }
       } else {
@@ -11278,7 +11292,7 @@
           clearInterval(nonStreamTimer);
           nonStreamTimer = null;
         }
-        if (bubble._mdBody && retryCount === 0) {
+        if (task.isViewingTarget() && bubble._mdBody && retryCount === 0) {
           bubble._mdBody._lastHtml = '';
           bubble._mdBody.textContent = '';
         }
@@ -11353,19 +11367,20 @@
 
             // 关键：流式进行中就把最新内容与时间戳同步写入 localStorage
             // 勾选保留预输入时，气泡开头立刻显示预输入文本，后续内容在其后逐字追加
-            var streamParsed = setAssistantResponse(assistantMsg, stripAntiTruncateTag(stripChatTitle(answer)), reasoning);
-            if (!streamParsed.inThink) assistantMsg.content = withPrefill(assistantMsg.content);
+            var streamParsed = setAssistantResponse(responseMsg, stripAntiTruncateTag(stripChatTitle(answer)), reasoning);
+            if (!streamParsed.inThink) responseMsg.content = withPrefill(responseMsg.content);
             session.updatedAt = Date.now();
+            syncResponseView();
             scheduleSave();
 
             // 合并到下一帧渲染，避免长文本每个字都重新解析 Markdown
-            task.latestRender = { content: assistantMsg.content, reasoning: assistantMsg.reasoning || '', nativeReasoning: assistantMsg.nativeReasoning || '', tagReasoning: assistantMsg.tagReasoning || '' };
-            if (isCurrentSession(targetSession, targetSubChatId) && bubble.isConnected) {
+            task.latestRender = { content: responseMsg.content, reasoning: responseMsg.reasoning || '', nativeReasoning: responseMsg.nativeReasoning || '', tagReasoning: responseMsg.tagReasoning || '' };
+            if (isCurrentSession(targetSession, targetSubChatId) && task.isViewingTarget() && bubble.isConnected) {
               scheduleAssistantRender(bubble, task.latestRender);
             }
 
             // 中间楼层重答时不强行把滚动条拉到整个聊天室最底部
-            if (!keepScroll && isCurrentSession(targetSession, targetSubChatId)) scrollToBottom();
+            if (!keepScroll && task.isViewingTarget() && isCurrentSession(targetSession, targetSubChatId)) scrollToBottom();
           }
           return false;
         };
@@ -11422,14 +11437,16 @@
         break;
       }
       retryCount++;
-      task.continuationStatus = '检测到回复中断，正在自动续写 (' + retryCount + '/' + maxRetries + ')...';
-      showToast(task.continuationStatus);
-      syncStreamingUiState();
+      var continuationText = '正在自动续写 (第 ' + retryCount + '/' + maxRetries + ' 次)...';
+      if (memModule && memModule.createHudTask && memModule.updateHudTask) {
+        if (!task.continuationHud) task.continuationHud = memModule.createHudTask(continuationText);
+        else memModule.updateHudTask(task.continuationHud, 'running', continuationText);
+      }
       requestMessages = originalRequestMessages.concat([
         { role: 'assistant', content: accumulatedRawText },
         { role: 'user', content: '[系统续写指令] 你刚才的回复在传输中途意外中断，未能完整输出结束标记。注意：当前属于同一条回复的断流续传，绝非新一轮对话！请无视预设中针对“新回复开头”的格式要求，严禁重新输出任何开头思维链（如 <thinking> 等）、状态栏或前置标签，直接紧接你上一条回复的最后一个字无缝继续往下写（严禁重复前文，严禁道歉或解释），并在全部内容彻底写完后，于最末尾附带 <mychat_end/> 结束标记。' }
       ]);
-      if (isStreamMode) bubble.classList.add('streaming');
+      if (isStreamMode && task.isViewingTarget()) bubble.classList.add('streaming');
       }
     } catch (err) {
       task.error = err && err.message ? err.message : String(err);
@@ -11446,17 +11463,18 @@
         if (reusedBackup) {
           // 多分支模式下失败：丢弃本次追加的空分支槽位，回退到原分支
           if (swipeBranchMode && Array.isArray(assistantMsg.swipes) && assistantMsg.swipes.length > 1) {
-            assistantMsg.swipes.pop();
-            assistantMsg.swipeIndex = assistantMsg.swipes.length - 1;
+            assistantMsg.swipes.splice(targetSwipeIndex, 1);
+            assistantMsg.swipeIndex = Math.min(assistantMsg.swipeIndex, assistantMsg.swipes.length - 1);
+            task.discardedSwipe = true;
           }
           // 原位覆盖失败：恢复被覆盖的原始 AI 楼层，绝不删除任何楼层
-          assistantMsg.content = reusedBackup.content || '';
+          responseMsg.content = reusedBackup.content || '';
           ['reasoning', 'nativeReasoning', 'tagReasoning'].forEach(function (key) {
-            if (typeof reusedBackup[key] === 'string') assistantMsg[key] = reusedBackup[key];
-            else delete assistantMsg[key];
+            if (typeof reusedBackup[key] === 'string') responseMsg[key] = reusedBackup[key];
+            else delete responseMsg[key];
           });
-          if (reusedBackup.generationError) assistantMsg.generationError = reusedBackup.generationError;
-          else delete assistantMsg.generationError;
+          if (reusedBackup.generationError) responseMsg.generationError = reusedBackup.generationError;
+          else delete responseMsg.generationError;
           if (reusedBackup.meta) {
             assistantMsg.meta = reusedBackup.meta;
           } else {
@@ -11464,6 +11482,7 @@
           }
           // 单分支时退回普通消息结构，避免留下只有 1 个分支的冗余 swipes
           if (Array.isArray(assistantMsg.swipes) && assistantMsg.swipes.length <= 1) {
+            applySwipeToMessage(assistantMsg);
             delete assistantMsg.swipes;
             delete assistantMsg.swipeIndex;
           }
@@ -11477,7 +11496,7 @@
         task.showStandaloneError = !task.controller.signal.aborted;
       } else if (!task.controller.signal.aborted) {
         // 正文、原生思考、标签思考任一非空，均作为正式助手楼层保存。
-        assistantMsg.generationError = errorText;
+        responseMsg.generationError = errorText;
       }
     } finally {
       if (debug && traceId) debug.finish(traceId, {status:task.error ? 'error' : 'success', response:{
@@ -11516,61 +11535,43 @@
         var finalParsed = splitLeadingThink(answer);
         tagReasoning = [tagReasoning, finalParsed.reasoning].filter(Boolean).join('\n\n');
         answer = finalParsed.answer;
-        assistantMsg.content = answer;
+        responseMsg.content = answer;
       }
       // 收尾：让 onReceive 阀门做入库前清洗，再确保最终内容立即落盘
       if (answer) {
         var receivedText = runPipeline('onReceive', answer, {
           session: session,
-          msg: assistantMsg
+          msg: targetSwipeIndex === null ? assistantMsg : Object.assign({}, assistantMsg, responseMsg)
         });
         if (typeof receivedText === 'string') answer = receivedText;
-        assistantMsg.content = answer;
+        responseMsg.content = answer;
       }
 
       // 预输入回显与去重：
       // - 勾选「保留显示」时，若 AI 正文未以预输入开头则补到气泡开头
       // - 若接口已把预输入原样复述（正文以它开头）则只保留一份，避免重复
       if (answer || reasoning || tagReasoning) {
-        setAssistantResponse(assistantMsg, answer, reasoning, tagReasoning);
+        setAssistantResponse(responseMsg, answer, reasoning, tagReasoning);
       }
       if (prefillPrefix && !(finalParsed && finalParsed.inThink)) {
-        var currentAnswer = typeof assistantMsg.content === 'string' ? assistantMsg.content : '';
+        var currentAnswer = typeof responseMsg.content === 'string' ? responseMsg.content : '';
         var mappedPrefix = window.MyChatVocab ? window.MyChatVocab.applyVocabMapping(prefillPrefix) : prefillPrefix;
-        if (currentAnswer.indexOf(mappedPrefix) !== 0) assistantMsg.content = mappedPrefix + currentAnswer;
-        answer = assistantMsg.content;
+        if (currentAnswer.indexOf(mappedPrefix) !== 0) responseMsg.content = mappedPrefix + currentAnswer;
+        answer = responseMsg.content;
       }
 
-      assistantMsg.content = stripAntiTruncateTag(assistantMsg.content);
+      responseMsg.content = stripAntiTruncateTag(responseMsg.content);
 
-      // ---- 多分支收尾：把最终正文 / 思维链同步写入当前分支槽位 ----
-      // 流式完成、中断、失败恢复三种情况都走这里，保证 swipes 与顶层字段永不脱节
-      if (Array.isArray(assistantMsg.swipes) && assistantMsg.swipes.length) {
-        var finalIdx = normalizeSwipeIndex(assistantMsg);
-        var finalContent = typeof assistantMsg.content === 'string' ? assistantMsg.content : '';
-        var finalReasoning = typeof assistantMsg.reasoning === 'string' ? assistantMsg.reasoning : '';
-        // 空分支槽位（新槽位且未产生内容）直接剔除，避免留下「1/2 空白分支」
-        if (!finalContent && !finalReasoning && assistantMsg.swipes.length > 1 && !assistantMsg.swipes[finalIdx].content) {
-          assistantMsg.swipes.splice(finalIdx, 1);
-          if (!assistantMsg.swipes.length) {
-            delete assistantMsg.swipes;
-            delete assistantMsg.swipeIndex;
-          } else {
-            assistantMsg.swipeIndex = Math.min(finalIdx, assistantMsg.swipes.length - 1);
-            applySwipeToMessage(assistantMsg);
-          }
-        } else if (assistantMsg.swipes[finalIdx]) {
-          assistantMsg.swipes[finalIdx].content = finalContent;
-          ['reasoning', 'nativeReasoning', 'tagReasoning', 'generationError'].forEach(function (key) {
-            if (assistantMsg[key]) assistantMsg.swipes[finalIdx][key] = assistantMsg[key];
-            else delete assistantMsg.swipes[finalIdx][key];
-          });
-          assistantMsg.swipes[finalIdx].timestamp = Date.now();
-          // 单分支时不必保留 swipes 结构，保持旧数据形态整洁
-          if (assistantMsg.swipes.length <= 1) {
-            delete assistantMsg.swipes;
-            delete assistantMsg.swipeIndex;
-          }
+      // 仅提交冻结目标；结束或失败都保留用户选择。
+      if (targetSwipeIndex !== null && Array.isArray(assistantMsg.swipes)) {
+        if (!task.discardedSwipe && !responseMsg.content && !responseMsg.reasoning && assistantMsg.swipes.length > 1) {
+          assistantMsg.swipes.splice(targetSwipeIndex, 1);
+          if (assistantMsg.swipeIndex >= targetSwipeIndex) assistantMsg.swipeIndex = Math.max(0, assistantMsg.swipeIndex - 1);
+        } else if (!task.discardedSwipe) responseMsg.timestamp = Date.now();
+        applySwipeToMessage(assistantMsg);
+        if (assistantMsg.swipes.length <= 1) {
+          delete assistantMsg.swipes;
+          delete assistantMsg.swipeIndex;
         }
       }
 
@@ -11654,6 +11655,8 @@
 
       if (!isCurrentSession(targetSession, targetSubChatId)) {
         // 后台完成只保存原通道，不操作当前视图。
+      } else if (!task.isViewingTarget()) {
+        // 历史分支保持静态阅读，不用最终生成内容重绘。
       } else if (!bubble.isConnected) {
         // 流式期间用户切换过会话：若已切回本会话，按最终数据重绘一次
         if (isCurrentSession(targetSession, targetSubChatId)) renderMessages();
@@ -11668,7 +11671,7 @@
         bubble._finalized = true;
         renderAssistantBubble(
           bubble,
-          { content: withPrefill(answer), reasoning: assistantMsg.reasoning || '', nativeReasoning: assistantMsg.nativeReasoning || '', tagReasoning: assistantMsg.tagReasoning || '' },
+          { content: withPrefill(answer), reasoning: responseMsg.reasoning || '', nativeReasoning: responseMsg.nativeReasoning || '', tagReasoning: responseMsg.tagReasoning || '' },
           false
         );
         // 用带操作栏的标准行替换临时流式气泡行，保证索引与数组严格对应
@@ -11684,6 +11687,11 @@
       }
     }
     } finally {
+      if (task.continuationHud && memModule && memModule.updateHudTask) {
+        memModule.updateHudTask(task.continuationHud,
+          task.controller.signal.aborted || task.error ? 'stopped' : 'success',
+          task.controller.signal.aborted ? '续写已中止' : task.error ? '续写已结束' : '自动续写完成');
+      }
       if (task.bubbleRefs) task.bubbleRefs._finalized = true;
       if (activeGenerationMap.get(taskKey) === task) activeGenerationMap.delete(taskKey);
       syncStreamingUiState();
@@ -12096,18 +12104,18 @@
       return;
     }
 
-    if (isCurrentActiveChannelGenerating()) {
-      void window.showAppAlert('请等待当前对话回复结束');
-      return;
-    }
-
-    // 多分支切换：上一条 / 下一条，原位换内容后重绘该楼层
+    // 多分支切换与复制一样，不受当前通道生成锁限制。
     if (action === 'swipe-prev') {
       switchMessageSwipe(index, -1);
       return;
     }
     if (action === 'swipe-next') {
       switchMessageSwipe(index, 1);
+      return;
+    }
+
+    if (isCurrentActiveChannelGenerating()) {
+      void window.showAppAlert('请等待当前对话回复结束');
       return;
     }
 
@@ -12892,7 +12900,8 @@
    */
   function getSyncConfig() {
     var result = { syncPlatform: config.syncPlatform, syncToken: config.syncToken,
-      gistId: config.gistId, autoSync: config.autoSync };
+      gistId: config.gistId, autoSync: config.autoSync,
+      cloudHistoryPauseCleanup: config.cloudHistoryPauseCleanup === true };
     S3_CONFIG_FIELDS.forEach(function (key) { result[key] = config[key] || ''; });
     return result;
   }
@@ -15512,6 +15521,15 @@
       if (button) button.addEventListener('click', function () {
         manualCloudSync(id === 'btn-cloud-upload' ? 'push' : 'pull');
       });
+    });
+    document.getElementById('cfg-cloud-history-pause-cleanup').addEventListener('change', function (event) {
+      var previous = config.cloudHistoryPauseCleanup;
+      config.cloudHistoryPauseCleanup = event.target.checked;
+      if (!persistConfig(true)) {
+        config.cloudHistoryPauseCleanup = previous;
+        event.target.checked = previous === true;
+        showToast('配置保存失败');
+      }
     });
     document.getElementById('cfg-auto-sync').addEventListener('change', function (event) {
       config.autoSync = event.target.checked;
