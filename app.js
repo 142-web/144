@@ -33,6 +33,7 @@
   var LAST_MODIFIED_KEY = 'mychat_last_modified'; // 全局最后修改时间戳（毫秒）
   var LAST_SYNCED_CLOUD_STAMP_KEY = 'mychat_last_synced_cloud_stamp'; // 本设备云端一致性基准，不云同步
   var LAST_BACKUP_MAINT_AT_KEY = 'mychat_last_backup_maint_at'; // 本设备快照维护冷却，不云同步
+  var CLOUD_HISTORY_CONFIG_KEY = 'mychat_cloud_history_config';
   var S3_MANIFEST_KEY = 'mychat_s3_manifest'; // 本设备已提交指纹账本，不云同步或恢复
   var THEME_KEY = 'mychat_theme';            // 主题偏好：light | dark
   var VIEW_KEY = 'mychat_view';              // 视图偏好：bubble | wide
@@ -8314,6 +8315,8 @@
     settingsDraft.sync = getSyncConfig();
     S3_CONFIG_FIELDS.forEach(function (key) { document.getElementById(s3FieldId(key)).value = config[key]; });
     updateSyncProviderFields();
+    fillCloudHistoryConfig();
+    refreshCloudHistoryList();
 
     // 打开设置前先收起底部浮层，避免层级遮挡
     closeQuickModelPanel();
@@ -8377,6 +8380,7 @@
   function closeSettings() {
     blurInside(els.modal);
     els.modal.classList.remove('show');
+    closeCloudHistoryHelp();
     els.modal.setAttribute('aria-hidden', 'true');
     draftProviders = null;
     draftActiveTarget = null;
@@ -12917,6 +12921,8 @@
     var s3Fields = document.getElementById('sync-s3-fields');
     if (gistFields) gistFields.hidden = isS3;
     if (s3Fields) s3Fields.hidden = !isS3;
+    var historyFields = document.getElementById('cloud-history-panel');
+    if (historyFields) historyFields.hidden = !isS3;
   }
 
   function isSyncConfigured() {
@@ -13244,6 +13250,7 @@
     payload.quickReplies = readStorageValue(QUICK_REPLIES_KEY);
     payload.autoRetry = readStorageValue(AUTO_RETRY_KEY);
     payload.imageGenConfig = readStorageValue(IMAGE_GEN_CONFIG_KEY);
+    payload.cloudHistoryConfig = getCloudHistoryConfig();
     // 未知扩展仅保留小值；旧载荷、备份及快照等容器不再透传。
     var mirror = readStorageValue(CLOUD_MIRROR_KEY);
     var extensionBytes = 0;
@@ -13585,7 +13592,7 @@
     var keys = [CONFIG_KEY, SYNC_CONFIG_KEY, PROVIDERS_KEY, ACTIVE_TARGET_KEY, SESSIONS_KEY, CURRENT_ID_KEY,
       LAST_MODIFIED_KEY, THEME_KEY, VIEW_KEY, CHAT_PARAMS_KEY, PROMPT_PRESETS_KEY,
       REGEX_RULES_KEY, WORLDBOOKS_KEY, VOCAB_RULES_KEY, QUICK_REPLIES_KEY,
-      GLOBAL_TAVERN_VARS_KEY, AUTO_RETRY_KEY, IMAGE_GEN_CONFIG_KEY, CLOUD_MIRROR_KEY];
+      GLOBAL_TAVERN_VARS_KEY, AUTO_RETRY_KEY, IMAGE_GEN_CONFIG_KEY, CLOUD_HISTORY_CONFIG_KEY, CLOUD_MIRROR_KEY];
     var storage = {};
     keys.forEach(function (key) { storage[key] = localStorage.getItem(key); });
     return { storage: storage, cache: new Map(storageCache), memory: JSON.parse(JSON.stringify({config: config,
@@ -13758,6 +13765,9 @@
   function applyCloudExtras(payload, options = {}) {
     if (!payload || typeof payload !== 'object') return;
 
+    if (payload.cloudHistoryConfig && typeof payload.cloudHistoryConfig === 'object') {
+      requireStorageWrite(writeStorageValue(CLOUD_HISTORY_CONFIG_KEY, normalizeCloudHistoryConfig(payload.cloudHistoryConfig)));
+    }
     if (payload.globalTavernVars && typeof payload.globalTavernVars === 'object' && !Array.isArray(payload.globalTavernVars)) {
       requireStorageWrite(writeStorageValue(GLOBAL_TAVERN_VARS_KEY, payload.globalTavernVars));
     }
@@ -14053,41 +14063,298 @@
     localStorage.setItem(LAST_SYNCED_CLOUD_STAMP_KEY, String(stamp));
     lastSyncAt = Date.now();
     setSyncStatus('ok');
-    if (s3BackupInFlight || now - lastBackupUploadAt < 24 * 60 * 60 * 1000 ||
-        now - lastBackupUploadAt < 30 * 60 * 1000) return;
-    // 主提交已完成；后台压缩本次完整快照，不阻塞日常增量同步。
+    if (s3BackupInFlight) return;
+    // 固化本轮数据，避免后台压缩期间会话继续变动；主流程不等待历史请求。
+    var historyJson = JSON.stringify(layered.payload);
     s3BackupInFlight = true;
-    maintainS3LayeredBackup(layered.payload, now).finally(function () { s3BackupInFlight = false; });
+    maintainS3LayeredBackup(historyJson, now).finally(function () { s3BackupInFlight = false; });
   }
 
-  async function maintainS3LayeredBackup(payloadObj, now) {
-    try {
-      var backupKey = 'mychat_backup_' + formatDateKey(now) + '.gz';
-      var gzBytes = await compressStringToGzipBytes(JSON.stringify(payloadObj));
-      await s3Request('PUT', backupKey, gzBytes, 'application/gzip');
-      var token = null;
-      var cutoff = new Date(now);
-      cutoff.setHours(0, 0, 0, 0);
-      cutoff.setDate(cutoff.getDate() - 7);
-      do {
-        var params = { 'list-type': '2', prefix: 'mychat_backup_' };
-        if (token) params['continuation-token'] = token;
-        var listed = await s3Request('GET', '', null, null, params);
-        if (!listed) throw new Error('云端备份列表缺失');
-        var xml = await listed.text();
-        var keys = Array.from(xml.matchAll(/<Key>(mychat_backup_(\d{4}-\d{2}-\d{2})\.gz)<\/Key>/g));
-        await Promise.all(keys.filter(function (match) { return new Date(match[2] + 'T00:00:00').getTime() < cutoff.getTime(); })
-          .map(async function (match) { await s3Request('DELETE', match[1]); }));
-        var documentXml = new DOMParser().parseFromString(xml, 'application/xml');
-        if (documentXml.querySelector('parsererror')) throw new Error('云端备份列表无效');
-        var next = documentXml.getElementsByTagName('NextContinuationToken')[0];
-        token = next ? next.textContent : null;
-      } while (token);
-      lastBackupUploadAt = Date.now();
-      localStorage.setItem(LAST_BACKUP_MAINT_AT_KEY, String(lastBackupUploadAt));
-    } catch (err) {
-      console.warn('[云同步] S3 快照维护跳过：', err);
+  // 历史配置与索引属于云同步主干，不增加独立插件或消息管道。
+  var CLOUD_HISTORY_INDEX = 'mychat_history_index.json';
+  var cloudHistoryFields = {
+    retentionDays: [3, 1, 30], activeIntervalMinutes: [10, 5, 120],
+    fineRetentionHours: [2, 1, 24], sparseIntervalHours: [2, 1, 12]
+  };
+  var cloudHistoryRefreshId = 0;
+  var cloudHistoryHelpPinned = false;
+
+  function closeCloudHistoryHelp() {
+    cloudHistoryHelpPinned = false;
+    var help = document.getElementById('cloud-history-help');
+    var button = document.getElementById('cloud-history-help-btn');
+    if (help) help.hidden = true;
+    if (button) button.setAttribute('aria-expanded', 'false');
+  }
+
+  function initCloudHistoryUi() {
+    Object.keys(cloudHistoryFields).forEach(function (key) {
+      var input = document.getElementById('cloud-history-' + key);
+      if (!input) return;
+      input.addEventListener('change', function () {
+        var next = getCloudHistoryConfig(); next[key] = input.value;
+        if (!writeStorageValue(CLOUD_HISTORY_CONFIG_KEY, normalizeCloudHistoryConfig(next))) showToast('历史配置保存失败');
+        else touchLastModified();
+        fillCloudHistoryConfig();
+      });
+    });
+    var refresh = document.getElementById('cloud-history-refresh');
+    if (refresh) refresh.addEventListener('click', refreshCloudHistoryList);
+    var help = document.getElementById('cloud-history-help'), button = document.getElementById('cloud-history-help-btn');
+    if (!help || !button) return;
+    function openHelp() {
+      help.hidden = false;
+      button.setAttribute('aria-expanded', 'true');
+      var box = button.getBoundingClientRect();
+      help.style.left = Math.max(12, Math.min(box.left, window.innerWidth - help.offsetWidth - 12)) + 'px';
+      help.style.top = Math.max(12, Math.min(box.bottom + 6, window.innerHeight - help.offsetHeight - 12)) + 'px';
     }
+    button.addEventListener('mouseenter', openHelp);
+    button.addEventListener('mouseleave', function (event) { if (!cloudHistoryHelpPinned && !help.contains(event.relatedTarget)) closeCloudHistoryHelp(); });
+    help.addEventListener('mouseleave', function (event) { if (!cloudHistoryHelpPinned && !button.contains(event.relatedTarget)) closeCloudHistoryHelp(); });
+    button.addEventListener('focus', openHelp);
+    button.addEventListener('blur', function () { if (!cloudHistoryHelpPinned) closeCloudHistoryHelp(); });
+    button.addEventListener('click', function () {
+      if (cloudHistoryHelpPinned) closeCloudHistoryHelp();
+      else { cloudHistoryHelpPinned = true; openHelp(); }
+    });
+    document.addEventListener('pointerdown', function (event) {
+      if (!button.contains(event.target) && !help.contains(event.target)) closeCloudHistoryHelp();
+    }, true);
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && !help.hidden) { closeCloudHistoryHelp(); event.stopImmediatePropagation(); }
+    }, true);
+    window.addEventListener('resize', closeCloudHistoryHelp);
+  }
+
+  function normalizeCloudHistoryConfig(value) {
+    var result = {};
+    Object.keys(cloudHistoryFields).forEach(function (key) {
+      var rule = cloudHistoryFields[key], raw = value && value[key];
+      var n = raw === '' || raw == null ? NaN : Number(raw);
+      result[key] = Number.isFinite(n) ? Math.max(rule[1], Math.min(rule[2], Math.floor(n))) : rule[0];
+    });
+    return result;
+  }
+
+  function getCloudHistoryConfig() {
+    return normalizeCloudHistoryConfig(readStorageValue(CLOUD_HISTORY_CONFIG_KEY));
+  }
+
+  function fillCloudHistoryConfig() {
+    var value = getCloudHistoryConfig();
+    Object.keys(value).forEach(function (key) {
+      var input = document.getElementById('cloud-history-' + key);
+      if (input) input.value = value[key];
+    });
+  }
+
+  function cloudHistoryIdentity() {
+    return JSON.stringify([config.syncPlatform].concat(S3_CONFIG_FIELDS.map(function (key) { return config[key]; })));
+  }
+
+  function assertCloudHistoryIdentity(identity) {
+    if (config.syncPlatform !== 's3' || identity !== cloudHistoryIdentity()) throw new Error('云连接已变更，请重试');
+  }
+
+  async function cloudHistoryRequest(identity, method, key, body, type, headers) {
+    assertCloudHistoryIdentity(identity);
+    var response = await s3Request(method, key, body, type, null, headers);
+    assertCloudHistoryIdentity(identity);
+    return response;
+  }
+
+  async function readCloudHistoryIndex(identity) {
+    var response = await cloudHistoryRequest(identity, 'GET', CLOUD_HISTORY_INDEX);
+    if (!response) return { snapshots: [], etag: null, exists: false };
+    var data = await response.json();
+    // 损坏索引禁止覆盖；绝不根据未校验的 key 删除桶内其他文件。
+    var list = Array.isArray(data) ? data : data && data.snapshots;
+    if (!Array.isArray(list)) throw new Error('云端历史索引无效');
+    var seen = new Set();
+    list.forEach(function (item) {
+      if (!item || !/^history\/mychat_backup_\d{4}-\d{2}-\d{2}_\d{6}(?:_[a-z0-9-]+)?\.gz$/.test(item.key) ||
+          seen.has(item.key) || !Number.isFinite(item.timestamp) || item.timestamp <= 0 ||
+          !['auto', 'pre_restore'].includes(item.reason) ||
+          !['sessionCount', 'totalMessages', 'size'].every(function (key) { return Number.isSafeInteger(item[key]) && item[key] >= 0; })) {
+        throw new Error('云端历史索引无效');
+      }
+      seen.add(item.key);
+    });
+    return { snapshots: list.slice().sort(function (a, b) { return b.timestamp - a.timestamp; }),
+      etag: response.headers.get('ETag'), exists: true };
+  }
+
+  async function writeCloudHistoryIndex(identity, index) {
+    var headers = index.etag ? { 'If-Match': index.etag } : (!index.exists ? { 'If-None-Match': '*' } : {});
+    var response = await cloudHistoryRequest(identity, 'PUT', CLOUD_HISTORY_INDEX,
+      JSON.stringify({ snapshots: index.snapshots }), 'application/json', headers);
+    index.etag = response.headers.get('ETag');
+    index.exists = true;
+  }
+
+  async function cloudHistoryFingerprint(payload) {
+    var data = Object.assign({}, payload);
+    delete data.lastModified;
+    return layeredHash(JSON.stringify(data, function (_, value) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+      var sorted = Object.create(null);
+      Object.keys(value).sort().forEach(function (key) { sorted[key] = value[key]; });
+      return sorted;
+    }));
+  }
+
+  async function uploadCloudHistorySnapshot(json, reason, now, identity, index, fingerprint) {
+    var payload = JSON.parse(json);
+    var stats = collectRestoreStats(payload);
+    var time = new Date(now), pad = function (n) { return String(n).padStart(2, '0'); };
+    // 随机后缀防同秒覆盖；历史正文先 UTF-8 Base64 反转混淆，再 Gzip。
+    var nonce = Array.from(crypto.getRandomValues(new Uint32Array(2))).map(function (n) { return n.toString(36); }).join('-');
+    var key = 'history/mychat_backup_' + formatDateKey(now) + '_' + pad(time.getHours()) + pad(time.getMinutes()) + pad(time.getSeconds()) + '_' + nonce + '.gz';
+    var encoded = uint8ToBase64Fast(new TextEncoder().encode(json)).split('').reverse().join('');
+    var bytes = await compressStringToGzipBytes(JSON.stringify({ _encrypted: true, payload: encoded }));
+    await cloudHistoryRequest(identity, 'PUT', key, bytes, 'application/gzip');
+    var snapshot = { key: key, timestamp: now, sessionCount: stats.sessionsCount,
+      totalMessages: stats.messagesCount, size: bytes.byteLength, reason: reason, fingerprint: fingerprint };
+    index.snapshots.unshift(snapshot);
+    // 索引提交失败同样视为保险失败，调用方不得开始恢复。
+    await writeCloudHistoryIndex(identity, index);
+    return snapshot;
+  }
+
+  function selectCloudHistoryKeep(list, now, settings) {
+    var hour = 3600000, day = 24 * hour, slots = new Set(), dates = new Set(), keep = new Set();
+    list.slice().sort(function (a, b) { return b.timestamp - a.timestamp; }).forEach(function (item) {
+      var age = now - item.timestamp;
+      if (age > settings.retentionDays * day) return;
+      if (age <= settings.fineRetentionHours * hour) { keep.add(item.key); return; }
+      if (age <= day) {
+        var slot = Math.floor((age - settings.fineRetentionHours * hour) / (settings.sparseIntervalHours * hour));
+        if (!slots.has(slot)) { slots.add(slot); keep.add(item.key); }
+      } else {
+        var date = formatDateKey(item.timestamp);
+        if (!dates.has(date)) { dates.add(date); keep.add(item.key); }
+      }
+    });
+    return keep;
+  }
+
+  async function cleanupCloudHistory(identity, index, now, settings) {
+    if (config.cloudHistoryPauseCleanup === true) return;
+    var keep = selectCloudHistoryKeep(index.snapshots, now, settings);
+    var deleted = new Set();
+    try {
+      for (var item of index.snapshots) {
+        // 开关可在异步维护途中切换，每次 DELETE 前重新检查。
+        if (config.cloudHistoryPauseCleanup === true) break;
+        if (!keep.has(item.key)) {
+          await cloudHistoryRequest(identity, 'DELETE', item.key);
+          deleted.add(item.key);
+        }
+      }
+    } finally {
+      if (deleted.size) {
+        index.snapshots = index.snapshots.filter(function (item) { return !deleted.has(item.key); });
+        await writeCloudHistoryIndex(identity, index);
+      }
+    }
+  }
+
+  async function maintainS3LayeredBackup(payloadJson, now) {
+    try {
+      var identity = cloudHistoryIdentity(), settings = getCloudHistoryConfig();
+      var payload = typeof payloadJson === 'string' ? JSON.parse(payloadJson) : payloadJson;
+      var fingerprint = await cloudHistoryFingerprint(payload);
+      var index = await readCloudHistoryIndex(identity), latest = index.snapshots[0];
+      if (latest && latest.fingerprint === fingerprint) return;
+      if (latest && now - latest.timestamp < settings.activeIntervalMinutes * 60000) return;
+      await uploadCloudHistorySnapshot(JSON.stringify(payload), 'auto', now, identity, index, fingerprint);
+      await cleanupCloudHistory(identity, index, now, settings);
+    } catch (err) {
+      console.warn('[云同步] S3 历史维护跳过：', err);
+    }
+  }
+
+  function formatCloudHistoryTime(timestamp) {
+    var d = new Date(timestamp), pad = function (n) { return String(n).padStart(2, '0'); };
+    return formatDateKey(timestamp) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  function renderCloudHistoryList(list) {
+    var container = document.getElementById('cloud-history-list');
+    if (!container) return;
+    container.replaceChildren();
+    if (!list.length) { container.textContent = '暂无云端历史'; return; }
+    list.forEach(function (item) {
+      var row = document.createElement('div'); row.className = 'cloud-history-row';
+      var info = document.createElement('div');
+      var time = document.createElement('time'); time.textContent = formatCloudHistoryTime(item.timestamp);
+      var tag = document.createElement('span'); tag.className = 'cloud-history-tag';
+      tag.textContent = item.reason === 'pre_restore' ? '恢复前备份' : '自动存档';
+      var detail = document.createElement('small');
+      var size = item.size >= 1048576 ? (item.size / 1048576).toFixed(2) + ' MB' : (item.size / 1024).toFixed(1) + ' KB';
+      detail.textContent = item.sessionCount + ' 主对话 · ' + item.totalMessages + ' 消息 · ' + size;
+      info.append(time, tag, detail);
+      var button = document.createElement('button'); button.type = 'button'; button.className = 'cloud-history-icon';
+      button.title = '恢复此版本'; button.setAttribute('aria-label', '恢复此版本');
+      button.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 10a9 9 0 1 1 2 8M3 4v6h6"/></svg>';
+      button.addEventListener('click', function () { restoreCloudHistorySnapshot(item); });
+      row.append(info, button); container.append(row);
+    });
+  }
+
+  async function refreshCloudHistoryList() {
+    var container = document.getElementById('cloud-history-list'), id = ++cloudHistoryRefreshId;
+    if (!container) return;
+    container.textContent = '请先保存云连接';
+    if (config.syncPlatform !== 's3' || !isSyncConfigured()) return;
+    var identity = cloudHistoryIdentity();
+    container.textContent = '正在加载…';
+    try {
+      // 打开和刷新都只读轻量索引，不列桶、不下载历史正文。
+      var index = await readCloudHistoryIndex(identity);
+      if (id === cloudHistoryRefreshId) renderCloudHistoryList(index.snapshots);
+    } catch (err) {
+      if (id === cloudHistoryRefreshId) container.textContent = '加载失败：' + err.message;
+    }
+  }
+
+  async function restoreCloudHistorySnapshot(target) {
+    if (isSyncing || s3BackupInFlight || activeGenerationMap.size) { showToast('请等待当前任务结束'); return; }
+    var identity = cloudHistoryIdentity();
+    if (!await window.showAppConfirm('恢复 ' + formatCloudHistoryTime(target.timestamp) + '？将先备份本机当前数据。')) return;
+    if (isSyncing || s3BackupInFlight || activeGenerationMap.size) { showToast('请等待当前任务结束'); return; }
+    isSyncing = true; s3BackupInFlight = true;
+    try {
+      assertCloudHistoryIdentity(identity);
+      requireStorageWrite(flushSave());
+      var json = JSON.stringify(buildCloudPayload(getLocalLastModified() || Date.now(), false));
+      var fingerprint = await cloudHistoryFingerprint(JSON.parse(json));
+      var index = await readCloudHistoryIndex(identity);
+      if (!index.snapshots.some(function (item) { return item.key === target.key; })) throw new Error('目标历史已移除，请刷新');
+      try {
+        await uploadCloudHistorySnapshot(json, 'pre_restore', Date.now(), identity, index, fingerprint);
+      } catch (err) { throw new Error('恢复前备份失败，已中止恢复：' + err.message); }
+      // 保险提交成功后才准下载目标；不触发清理，避免误删目标或保险。
+      var response = await cloudHistoryRequest(identity, 'GET', target.key);
+      if (!response) throw new Error('目标历史不存在');
+      var raw = await decompressGzipBytesToString(new Uint8Array(await response.arrayBuffer()));
+      var decoded = await decryptCloudContentAsync(raw);
+      var data = typeof decoded === 'string' ? JSON.parse(decoded) : decoded;
+      if (!data || !Array.isArray(data.sessions)) throw new Error('历史数据无效');
+      var payload = normalizeCloudPayloadData(data);
+      // 下载期间若本机发生变化，不冒险覆盖尚未包含于保险的新数据。
+      requireStorageWrite(flushSave());
+      var currentFingerprint = await cloudHistoryFingerprint(buildCloudPayload(getLocalLastModified(), false));
+      assertCloudHistoryIdentity(identity);
+      if (activeGenerationMap.size || currentFingerprint !== fingerprint) throw new Error('本机数据已变化，请重新恢复');
+      applyCloudData(payload, { source: 'cloud' });
+      // 历史时间不是主清单版本，不允许用它伪造自动上传的一致性基线。
+      localStorage.removeItem(LAST_SYNCED_CLOUD_STAMP_KEY);
+      fillCloudHistoryConfig();
+      showToast('已恢复，原数据已留档');
+    } catch (err) { showToast('恢复失败：' + err.message); }
+    finally { isSyncing = false; s3BackupInFlight = false; refreshCloudHistoryList(); }
   }
 
   async function doUploadToCloud(fromSync, isManualPush, remote) {
@@ -15522,6 +15789,7 @@
         manualCloudSync(id === 'btn-cloud-upload' ? 'push' : 'pull');
       });
     });
+    initCloudHistoryUi();
     document.getElementById('cfg-cloud-history-pause-cleanup').addEventListener('change', function (event) {
       var previous = config.cloudHistoryPauseCleanup;
       config.cloudHistoryPauseCleanup = event.target.checked;

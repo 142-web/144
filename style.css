@@ -2982,6 +2982,28 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 .app-dialog-button:focus-visible, .app-dialog-card input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* === [ANCHOR: CSS_SETTINGS_MODAL] 左右分栏设置弹窗样式 === */
+.cloud-history-panel { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); min-width: 0; }
+.cloud-history-panel[hidden], .cloud-history-help[hidden] { display: none; }
+.cloud-history-heading, .cloud-history-list-heading { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.cloud-history-heading h3 { margin: 0; font-size: 14px; }
+.cloud-history-list-heading { justify-content: space-between; margin-top: 12px; font-size: 12px; color: var(--text-dim); }
+.cloud-history-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 28px; height: 28px; padding: 5px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+.cloud-history-icon svg { flex-shrink: 0; width: 16px; height: 16px; }
+.cloud-history-icon:hover, .cloud-history-icon:focus-visible { color: var(--accent); border-color: var(--accent); }
+.cloud-history-config { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.cloud-history-config label { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px; margin: 0; min-width: 0; font-size: 11px; color: var(--text-dim); }
+.cloud-history-config label input { grid-column: 1; grid-row: 2; width: 100%; min-width: 0; box-sizing: border-box; padding: 5px 6px; font-size: 13px; }
+.cloud-history-config label span { grid-column: 2; grid-row: 2; font-size: 11px; }
+.cloud-history-help { position: fixed; z-index: 10020; width: 250px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; box-sizing: border-box; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); box-shadow: 0 8px 24px #0003; font-size: 12px; line-height: 1.65; }
+.cloud-history-help p { margin: 5px 0 10px; }
+.cloud-history-help p:last-child { margin-bottom: 0; }
+.cloud-history-list { max-height: 260px; overflow: auto; font-size: 12px; color: var(--text-dim); overflow-wrap: anywhere; }
+.cloud-history-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 0; border-bottom: 1px solid var(--border); }
+.cloud-history-row > div { min-width: 0; }
+.cloud-history-row time { font-variant-numeric: tabular-nums; color: var(--text); }
+.cloud-history-tag { display: inline-block; margin-left: 6px; padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px; font-size: 10px; }
+.cloud-history-row small { display: block; margin-top: 4px; font-size: 11px; }
+@media (max-width: 600px) { .cloud-history-config { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .chat-font-size-control {
   display: flex;
   align-items: center;

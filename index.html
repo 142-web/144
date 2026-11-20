@@ -14,7 +14,7 @@
   <title>MyChat</title>
   <!-- 代码高亮深色主题（hljs 官方 atom-one-dark 配色，国内高速镜像） -->
   <link rel="stylesheet" href="https://cdn.staticfile.net/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
-  <link rel="stylesheet" href="style.css?v=20260405_37" />
+  <link rel="stylesheet" href="style.css?v=20260405_38" />
 </head>
 
 <body>
@@ -644,6 +644,29 @@
                   </div>
                 </div>
               </div>
+              <section id="cloud-history-panel" class="cloud-history-panel" hidden aria-labelledby="cloud-history-title">
+                <div class="cloud-history-heading">
+                  <h3 id="cloud-history-title">云端历史</h3>
+                  <button id="cloud-history-help-btn" type="button" class="cloud-history-icon" title="历史说明" aria-label="历史说明" aria-expanded="false" aria-controls="cloud-history-help">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .6-1.5 1-1.5 2.5"/><circle cx="12" cy="17" r=".7" fill="currentColor" stroke="none"/></svg>
+                  </button>
+                </div>
+                <div id="cloud-history-help" class="cloud-history-help" role="note" hidden>
+                  <strong>最近 24 小时</strong>
+                  <p>从当前时间倒推，滚动计算。<br/>后三项只管这 24 小时：<br/>有变化，满活跃间隔才存档；<br/>精细时长内全留；更早按槽留最新。</p>
+                  <strong>超过 24 小时</strong>
+                  <p>按本地自然日，每天留当天最新。<br/>保留天数决定最远留到几天前。</p>
+                  <p>有数据变动才后台存档。<br/>挂机没变化，不重复上传。</p>
+                </div>
+                <div class="cloud-history-config">
+                  <label>历史保留天数<input id="cloud-history-retentionDays" type="number" min="1" max="30" step="1" value="3" aria-label="历史保留天数"/><span>天</span></label>
+                  <label>活跃存档间隔<input id="cloud-history-activeIntervalMinutes" type="number" min="5" max="120" step="1" value="10" aria-label="活跃存档间隔"/><span>分钟</span></label>
+                  <label>精细保留时长<input id="cloud-history-fineRetentionHours" type="number" min="1" max="24" step="1" value="2" aria-label="精细保留时长"/><span>小时</span></label>
+                  <label>24h 内稀疏间隔<input id="cloud-history-sparseIntervalHours" type="number" min="1" max="12" step="1" value="2" aria-label="24h 内稀疏间隔"/><span>小时</span></label>
+                </div>
+                <div class="cloud-history-list-heading"><span>历史快照</span><button id="cloud-history-refresh" type="button" class="cloud-history-icon" title="刷新历史列表" aria-label="刷新历史列表"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M5 7a8 8 0 0 1 13-2l2 2M4 17l2 2a8 8 0 0 0 13-2"/></svg></button></div>
+                <div id="cloud-history-list" class="cloud-history-list" aria-live="polite">暂无云端历史</div>
+              </section>
             </div>
           </section>
         </div>
@@ -1050,7 +1073,7 @@
     <footer><button type="button" class="preset-import-icon" data-preset-import-close title="取消" aria-label="取消"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button><button type="button" id="xml-preset-submit" class="preset-import-icon" title="解析并创建中文模块预设" aria-label="解析并创建中文模块预设"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg></button></footer>
   </dialog>
 
-  <script src="app.js?v=20260405_37"></script>
+  <script src="app.js?v=20260405_38"></script>
   <!-- 抓包基础设施：宿主创建后立即可用，早于记忆请求模块 -->
   <script src="modules/debug-inspector.js?v=20260405_21"></script>
   <script src="modules/task-hud.js?v=20260405_21"></script>
