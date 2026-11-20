@@ -502,6 +502,18 @@
                 </label>
               </div>
 
+              <div class="field param-switch-field">
+                <label class="param-switch" for="cfg-anti-truncate">
+                  <input id="cfg-anti-truncate" type="checkbox" />
+                  <span>开启防截断自动续写（暗号验收）</span>
+                </label>
+                <p class="hint">在请求末尾附带隐形结束暗号，若中途被掐断则自动无缝续写</p>
+              </div>
+              <div class="field">
+                <label for="cfg-anti-truncate-retries">最大自动续写次数（安全阀）</label>
+                <input id="cfg-anti-truncate-retries" type="number" min="1" max="5" step="1" value="2" />
+              </div>
+
               <label class="qp-switch">
                 <input id="cfg-dynamic-context" type="checkbox" />
                 <span>随记忆库动态变更层数</span>
@@ -1033,7 +1045,7 @@
     <footer><button type="button" class="preset-import-icon" data-preset-import-close title="取消" aria-label="取消"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button><button type="button" id="xml-preset-submit" class="preset-import-icon" title="解析并创建中文模块预设" aria-label="解析并创建中文模块预设"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg></button></footer>
   </dialog>
 
-  <script src="app.js?v=20260405_34"></script>
+  <script src="app.js?v=20260405_35"></script>
   <!-- 抓包基础设施：宿主创建后立即可用，早于记忆请求模块 -->
   <script src="modules/debug-inspector.js?v=20260405_21"></script>
   <script src="modules/task-hud.js?v=20260405_21"></script>
@@ -1066,7 +1078,7 @@
   <script src="modules/auto-retry.js?v=20260405_21"></script>
   <script src="modules/image-generator.js?v=20260405_22"></script>
   <script src="modules/preset-workbench.js?v=20260405_34"></script>
-  <script src="modules/plugin-hub.js?v=20260405_32"></script>
+  <script src="modules/plugin-hub.js?v=20260405_35"></script>
 </body>
 
 </html>

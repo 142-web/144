@@ -202,6 +202,8 @@
 
     // 设置弹窗：全局默认对话参数
     cfgStream: document.getElementById('cfg-stream'),
+    cfgAntiTruncate: document.getElementById('cfg-anti-truncate'),
+    cfgAntiTruncateRetries: document.getElementById('cfg-anti-truncate-retries'),
     cfgContextLimit: document.getElementById('cfg-context-limit'),
     cfgDynamicContext: document.getElementById('cfg-dynamic-context'),
     cfgTemperature: document.getElementById('cfg-temperature'),
@@ -1589,7 +1591,9 @@
     topP: 1,
     maxTokens: null,
     stream: true,
-    realTime: true
+    realTime: true,
+    antiTruncateEnabled: false,
+    antiTruncateMaxRetries: 2
   };
 
   // 内存中的全局默认参数（页面加载时从 localStorage 回填）
@@ -1618,7 +1622,7 @@
   }
 
   /**
-   * 深拷贝并规范化一组对话参数，保证结构永远是完整的 5 个字段
+   * 深拷贝并规范化全部对话参数，安全阀固定为 1~5 的整数。
    */
   function cloneChatParams(source) {
     var src = source && typeof source === 'object' ? source : {};
@@ -1630,7 +1634,10 @@
       maxTokens: normalizePositiveInt(src.maxTokens),
       stream: src.stream !== false,
       // 静默现实时间背景板开关（仅控制本次请求是否附带 <env_context>）
-      realTime: src.realTime !== false
+      realTime: src.realTime !== false,
+      antiTruncateEnabled: src.antiTruncateEnabled === true,
+      antiTruncateMaxRetries: src.antiTruncateMaxRetries === '' || src.antiTruncateMaxRetries == null || !isFinite(Number(src.antiTruncateMaxRetries))
+        ? 2 : Math.min(5, Math.max(1, Math.floor(Number(src.antiTruncateMaxRetries))))
     };
   }
 
@@ -1742,7 +1749,9 @@
       current.temperature !== base.temperature ||
       current.topP !== base.topP ||
       current.maxTokens !== base.maxTokens ||
-      current.stream !== base.stream
+      current.stream !== base.stream ||
+      current.antiTruncateEnabled !== base.antiTruncateEnabled ||
+      current.antiTruncateMaxRetries !== base.antiTruncateMaxRetries
     );
   }
 
@@ -6416,6 +6425,9 @@
         bubble._mdBody._sandboxProseSeparated = false;
         enhanceCodeBlocks(bubble._mdBody);
         restoreCodeCollapseState(bubble._mdBody, collapsedStates);
+        if (window.MyChatPlugins && typeof window.MyChatPlugins.applyBodyPluginsSync === 'function') {
+          window.MyChatPlugins.applyBodyPluginsSync(bubble._mdBody);
+        }
       }
       // 沙盒占位符 → 自适应高度 iframe（每次渲染后都要检查，流式输出会反复重绘）
       try {
@@ -7322,6 +7334,8 @@
     if (!inputs) return;
     if (inputs.stream) inputs.stream.checked = params.stream !== false;
     if (inputs.realTime) inputs.realTime.checked = params.realTime !== false;
+    if (inputs.antiTruncateEnabled) inputs.antiTruncateEnabled.checked = params.antiTruncateEnabled === true;
+    if (inputs.antiTruncateMaxRetries) inputs.antiTruncateMaxRetries.value = String(cloneChatParams(params).antiTruncateMaxRetries);
     if (inputs.dynamicContextByMemory) inputs.dynamicContextByMemory.checked = params.dynamicContextByMemory === true;
     if (inputs.contextLimit) {
       inputs.contextLimit.value = params.contextLimit === null ? '' : String(params.contextLimit);
@@ -7359,7 +7373,10 @@
       topP: inputs.topP ? inputs.topP.value : '',
       maxTokens: inputs.maxTokens ? inputs.maxTokens.value : '',
       stream: inputs.stream ? inputs.stream.checked !== false : true,
-      realTime: inputs.realTime ? inputs.realTime.checked !== false : true
+      realTime: inputs.realTime ? inputs.realTime.checked !== false : true,
+      // 快捷面板没有此控件时保留原分区配置，避免调整温度时误关续写。
+      antiTruncateEnabled: inputs.antiTruncateEnabled ? inputs.antiTruncateEnabled.checked : inputs.antiTruncateBase && inputs.antiTruncateBase.antiTruncateEnabled,
+      antiTruncateMaxRetries: inputs.antiTruncateMaxRetries ? inputs.antiTruncateMaxRetries.value : inputs.antiTruncateBase && inputs.antiTruncateBase.antiTruncateMaxRetries
     };
   }
 
@@ -7368,6 +7385,7 @@
    */
   function getQuickParamsInputs() {
     return {
+      antiTruncateBase: getSessionParams(getCurrentSession()),
       stream: els.qpStream,
       realTime: els.qpRealTime,
       contextLimit: els.qpContextLimit,
@@ -7496,6 +7514,8 @@
   function getChatParamsFormInputs() {
     return {
       stream: els.cfgStream,
+      antiTruncateEnabled: els.cfgAntiTruncate,
+      antiTruncateMaxRetries: els.cfgAntiTruncateRetries,
       contextLimit: els.cfgContextLimit,
       dynamicContextByMemory: els.cfgDynamicContext,
       temperature: els.cfgTemperature,
@@ -8549,6 +8569,20 @@
 
   function syncStreamingUiState() {
     var busy = updateSendButtonState();
+
+    // 续写提示跟随当前通道，切换会话时不串到其他回复。
+    var currentTask = getCurrentSession() && activeGenerationMap.get(generationKey(getCurrentSession().id, getActiveSubChatId(getCurrentSession())));
+    var continuationStatus = document.getElementById('anti-truncate-status');
+    if (currentTask && !currentTask.finished && currentTask.continuationStatus && els.chatArea) {
+      if (!continuationStatus) {
+        continuationStatus = document.createElement('div');
+        continuationStatus.id = 'anti-truncate-status';
+        continuationStatus.className = 'hint';
+        continuationStatus.setAttribute('role', 'status');
+        els.chatArea.appendChild(continuationStatus);
+      }
+      continuationStatus.textContent = currentTask.continuationStatus;
+    } else if (continuationStatus) continuationStatus.remove();
 
     // 只按当前通道禁用重答；其他通道的生成不阻塞此视图。
     if (els.chatArea) {
@@ -10682,6 +10716,10 @@
       requestMessages.push({ role: 'system', content: '请在回复的最末尾另起一行附上本次对话的简短标题（不超过12个字，不要带书名号或标点），严格使用格式：<chat_title>标题内容</chat_title>' });
     }
 
+    if (params.antiTruncateEnabled === true) {
+      requestMessages.push({ role: 'system', content: '[系统传输协议例外条款] 请严格遵守前文所有预设、格式、标签及停止规则，切勿省略或破坏任何预设要求的末尾内容。仅作为系统底层传输完整性校验的唯一例外：当你按照预设要求彻底完成全部输出并准备结束本次回复时，请在整条回复的最末尾（所有预设标签与正文之后）额外附带一个结束标记 <mychat_end/>，随后立即停止输出。' });
+    }
+
     return {apiMessages:requestMessages, history:includedHistory, systemPromptChars:mergedSystemPrompt.length, prefillPrefix:prefillPrefix, triggeredEntryNames:triggeredEntryNames, triggeredEntries:triggeredEntryDetails, injectedEntries:ctxResult && ctxResult.injectedEntries || []};
   }
 
@@ -10816,6 +10854,27 @@
 
   var pendingReplyPolicies = new Set();
   var pendingReplyRuns = new Map();
+
+  // 原始文本只用于验收；显示与落盘副本连末尾半截暗号也必须隐藏。
+  function stripAntiTruncateTag(text) {
+    return String(text || '').replace(/<mychat_end\/?\s*>/g, '')
+      .replace(/<(?:m|my|myc|mych|mycha|mychat|mychat_|mychat_e|mychat_en|mychat_end)?\/?\s*$/, '');
+  }
+
+  function stripContinuationLeadingThinking(chunkText) {
+    var text = String(chunkText || '');
+    var cleaned = text.replace(/^\s*<(thinking|thought|think|expert_thinking)\b[^>]*>[\s\S]*?<\/\1>\s*/i, '');
+    if (cleaned !== text) return stripContinuationLeadingThinking(cleaned);
+    if (/^\s*<(thinking|thought|think|expert_thinking)\b/i.test(text)) return '';
+    var prefix = text.trimStart().toLowerCase();
+    if (prefix && ['<thinking', '<thought', '<think', '<expert_thinking'].some(function (tag) { return tag.indexOf(prefix) === 0; })) return '';
+    return text;
+  }
+
+  function isLikelyModelRefusal(text) {
+    var compact = String(text || '').replace(/\s/g, '');
+    return compact.length < 300 && /(我无法|不能满足|无法满足|抱歉，我不能|对不起，我不能|作为(一个)?人工智能|作为\s*AI|违反.*?(政策|准则|规定|伦理)|涉及.*?(敏感|不当|色情|暴力)|I cannot|I can't|I'm sorry|I am sorry|As an AI|against my (safety|ethical|content) (guidelines|policies))/i.test(String(text || ''));
+  }
 
   async function requestAssistantAttempt(session, options) {
     var opts = options && typeof options === 'object' ? options : {};
@@ -11004,6 +11063,11 @@
 
     if (isStreamMode) bubble.classList.add('streaming');
     var answer = '';
+    var retryCount = 0;
+    var maxRetries = params.antiTruncateMaxRetries;
+    var originalRequestMessages = requestMessages.slice();
+    var accumulatedRawText = '';
+    var lastFinishReason = null;
     var reasoning = '';
     var tagReasoning = '';
 
@@ -11098,6 +11162,14 @@
         });
       };
 
+      // 接力共用同一载体、通道锁与中止信号。
+      while (true) {
+      var roundBase = stripAntiTruncateTag(accumulatedRawText);
+      var roundRawText = '';
+      var roundText = '';
+      var roundError = null;
+      lastFinishReason = null;
+      if (task.controller.signal.aborted) throw new Error('请求已中止');
       try {
         res = await sendChatRequest(true);
         // 部分中转站不支持 stream_options，会直接返回 400：去掉该参数自动重试一次
@@ -11161,8 +11233,11 @@
           );
         }
 
-        answer = extractFullContent(json);
-        reasoning = extractFullReasoning(json);
+        roundRawText = extractFullContent(json);
+        roundText = retryCount > 0 ? stripContinuationLeadingThinking(roundRawText) : roundRawText;
+        answer = accumulatedRawText = roundBase + roundText;
+        lastFinishReason = json.choices && json.choices[0] && json.choices[0].finish_reason || null;
+        reasoning += extractFullReasoning(json);
         // 非流式返回：直接从响应体读取 Token 用量
         usageInfo = extractUsageObject(json);
 
@@ -11179,7 +11254,7 @@
         bubble.classList.remove('streaming');
 
         // 非流式整体返回时同步写入会话数据（按保留设置回显预输入）
-        var fullParsed = setAssistantResponse(assistantMsg, stripChatTitle(answer), reasoning);
+        var fullParsed = setAssistantResponse(assistantMsg, stripAntiTruncateTag(stripChatTitle(answer)), reasoning);
         if (!fullParsed.inThink) assistantMsg.content = withPrefill(assistantMsg.content);
         session.updatedAt = Date.now();
         scheduleSave();
@@ -11197,7 +11272,7 @@
           clearInterval(nonStreamTimer);
           nonStreamTimer = null;
         }
-        if (bubble._mdBody) {
+        if (bubble._mdBody && retryCount === 0) {
           bubble._mdBody._lastHtml = '';
           bubble._mdBody.textContent = '';
         }
@@ -11238,6 +11313,7 @@
           var reasonPiece = '';
           var choice = chunkJson.choices && chunkJson.choices[0];
           if (choice) {
+            if (choice.finish_reason != null) lastFinishReason = choice.finish_reason;
             var delta = choice.delta || choice.message || null;
 
             // 思维链字段：DeepSeek-R1 等官方接口使用 reasoning_content
@@ -11263,11 +11339,15 @@
           }
 
           if (piece || reasonPiece) {
-            if (piece) answer += piece;
+            if (piece) {
+              roundRawText += piece;
+              roundText = retryCount > 0 ? stripContinuationLeadingThinking(roundRawText) : roundRawText;
+              answer = accumulatedRawText = roundBase + roundText;
+            }
 
             // 关键：流式进行中就把最新内容与时间戳同步写入 localStorage
             // 勾选保留预输入时，气泡开头立刻显示预输入文本，后续内容在其后逐字追加
-            var streamParsed = setAssistantResponse(assistantMsg, stripChatTitle(answer), reasoning);
+            var streamParsed = setAssistantResponse(assistantMsg, stripAntiTruncateTag(stripChatTitle(answer)), reasoning);
             if (!streamParsed.inThink) assistantMsg.content = withPrefill(assistantMsg.content);
             session.updatedAt = Date.now();
             scheduleSave();
@@ -11284,6 +11364,7 @@
           return false;
         };
 
+        try {
         while (!streamDone) {
           var chunk = await reader.read();
           if (task.controller.signal.aborted) throw new Error('请求已中止');
@@ -11309,11 +11390,11 @@
           if (buffer.trim()) consumeLine(buffer);
         }
 
-        // 主动释放读取锁
-        try {
-          await reader.cancel();
-        } catch (cancelErr) {
-          /* 忽略取消时的异常 */
+        } catch (streamError) {
+          roundError = streamError;
+        } finally {
+          try { await reader.cancel(); } catch (cancelErr) { /* 忽略取消异常 */ }
+          try { reader.releaseLock(); } catch (lockErr) { /* 忽略释放失败 */ }
         }
 
         bubble.classList.remove('streaming');
@@ -11321,6 +11402,27 @@
         if (!answer && !reasoning) {
           throw new Error('接口未返回任何文本内容，请检查【设置】中的模型名称是否正确。');
         }
+      }
+      // 暗号优先于 finish_reason；stop 不能代替完整性验收。
+      var hasEndTag = /<mychat_end\/?>/.test(accumulatedRawText);
+      var visibleRoundText = stripAntiTruncateTag(stripChatTitle(roundText)).trim();
+      var visibleBody = splitLeadingThink(stripAntiTruncateTag(stripChatTitle(accumulatedRawText))).answer.trim();
+      if (params.antiTruncateEnabled && !task.controller.signal.aborted && hasEndTag) break;
+      if (retryCount > 0 && !visibleRoundText && !task.controller.signal.aborted) break;
+      var mayContinue = params.antiTruncateEnabled && !task.controller.signal.aborted &&
+        retryCount < maxRetries && !!visibleBody && !isLikelyModelRefusal(accumulatedRawText);
+      if (!mayContinue) {
+        if (roundError) throw roundError;
+        break;
+      }
+      retryCount++;
+      task.continuationStatus = '检测到回复中断，正在自动续写 (' + retryCount + '/' + maxRetries + ')...';
+      syncStreamingUiState();
+      requestMessages = originalRequestMessages.concat([
+        { role: 'assistant', content: accumulatedRawText },
+        { role: 'user', content: '[系统续写指令] 你刚才的回复在传输中途意外中断，未能完整输出结束标记。注意：当前属于同一条回复的断流续传，绝非新一轮对话！请无视预设中针对“新回复开头”的格式要求，严禁重新输出任何开头思维链（如 <thinking> 等）、状态栏或前置标签，直接紧接你上一条回复的最后一个字无缝继续往下写（严禁重复前文，严禁道歉或解释），并在全部内容彻底写完后，于最末尾附带 <mychat_end/> 结束标记。' }
+      ]);
+      if (isStreamMode) bubble.classList.add('streaming');
       }
     } catch (err) {
       task.error = err && err.message ? err.message : String(err);
@@ -11386,7 +11488,7 @@
       // 完整响应先提取标题，再剥离标签；失败 / 中止仅清理正文，不提交起名。
       var titleMatch = autoTitleTarget && answer.match(/<chat_title>([\s\S]*?)<\/chat_title>/);
       var generatedTitle = titleMatch ? titleMatch[1].trim().replace(/[\r\n]+/g, '') : '';
-      answer = stripChatTitle(answer);
+      answer = stripAntiTruncateTag(stripChatTitle(answer));
       if (autoTitleTarget && !task.error && !task.controller.signal.aborted &&
           getSession(session.id) === targetSession &&
           session.subChats.indexOf(opts.targetSubChat) !== -1 &&
@@ -11431,6 +11533,8 @@
         if (currentAnswer.indexOf(mappedPrefix) !== 0) assistantMsg.content = mappedPrefix + currentAnswer;
         answer = assistantMsg.content;
       }
+
+      assistantMsg.content = stripAntiTruncateTag(assistantMsg.content);
 
       // ---- 多分支收尾：把最终正文 / 思维链同步写入当前分支槽位 ----
       // 流式完成、中断、失败恢复三种情况都走这里，保证 swipes 与顶层字段永不脱节

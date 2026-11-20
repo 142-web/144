@@ -131,6 +131,22 @@
     try { pending.forEach(processBody); }
     finally { pending.clear(); if (active) observe(); }
   }
+  function applyBodyPluginsSync(bodyEl) {
+    if (!bodyEl || bodyEl.nodeType !== 1 || (!dialogueActive && !periodActive) || bodyEl.closest(excluded)) return;
+    // 保留其他正文尚未送达的外部变更，当前正文则在绘制前立即修饰。
+    if (observer && active) {
+      receive(observer.takeRecords());
+      observer.disconnect();
+    }
+    try {
+      if (periodActive) removePeriodBreaks(bodyEl);
+      if (dialogueActive) processDialogueBody(bodyEl);
+      if (periodActive) processPeriodBody(bodyEl);
+      pending.delete(bodyEl);
+    } finally {
+      if (observer && active) observe();
+    }
+  }
   function removePeriodBreaks(scope) {
     var parents = new Set();
     scope.querySelectorAll('.plugin-period-break').forEach(function (span) {
@@ -306,6 +322,7 @@
   }
 
   window.MyChatPlugins = Object.freeze({ register: register, setEnabled: setEnabled,
+    applyBodyPluginsSync: applyBodyPluginsSync,
     isEnabled: function (id) { return config[id] === true; }, openModal: openModal, closeModal: closeModal });
   register({ id: 'dialogue_highlight', name: '人物对话美化',
     description: '将聊天正文里双引号（“...”和"..."）内的角色对话变为醒目护眼的橙色字体，方便区分对话与旁白。',
