@@ -314,6 +314,10 @@
                   <label for="qp-context-limit">上下文携带条数</label>
                   <input id="qp-context-limit" type="number" min="1" step="1" placeholder="" />
                 </div>
+                <label class="qp-switch">
+                  <input id="qp-anti-truncate" type="checkbox" />
+                  <span>防截断自动续写</span>
+                </label>
                 <div class="qp-field">
                   <label for="qp-temperature">温度（Temperature）</label>
                   <input id="qp-temperature" type="number" min="0" max="2" step="0.1" placeholder="" />
@@ -502,6 +506,17 @@
                 </label>
               </div>
 
+              <label class="qp-switch">
+                <input id="cfg-dynamic-context" type="checkbox" />
+                <span>随记忆库动态变更层数</span>
+              </label>
+              <div class="field">
+                <label for="cfg-context-limit">上下文携带条数</label>
+                <input id="cfg-context-limit" type="number" min="1" step="1"
+                  placeholder="" autocomplete="off" />
+                <p class="hint">留空则发送完整历史以最大化 API 缓存命中率；填写正整数 N 则仅截取最近 N 条消息。</p>
+              </div>
+
               <div class="field param-switch-field">
                 <label class="param-switch" for="cfg-anti-truncate">
                   <input id="cfg-anti-truncate" type="checkbox" />
@@ -512,17 +527,6 @@
               <div class="field">
                 <label for="cfg-anti-truncate-retries">最大自动续写次数（安全阀）</label>
                 <input id="cfg-anti-truncate-retries" type="number" min="1" max="5" step="1" value="2" />
-              </div>
-
-              <label class="qp-switch">
-                <input id="cfg-dynamic-context" type="checkbox" />
-                <span>随记忆库动态变更层数</span>
-              </label>
-              <div class="field">
-                <label for="cfg-context-limit">上下文携带条数</label>
-                <input id="cfg-context-limit" type="number" min="1" step="1"
-                  placeholder="" autocomplete="off" />
-                <p class="hint">留空则发送完整历史以最大化 API 缓存命中率；填写正整数 N 则仅截取最近 N 条消息。</p>
               </div>
 
               <div class="field">
@@ -1045,7 +1049,7 @@
     <footer><button type="button" class="preset-import-icon" data-preset-import-close title="取消" aria-label="取消"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button><button type="button" id="xml-preset-submit" class="preset-import-icon" title="解析并创建中文模块预设" aria-label="解析并创建中文模块预设"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg></button></footer>
   </dialog>
 
-  <script src="app.js?v=20260405_35"></script>
+  <script src="app.js?v=20260405_36"></script>
   <!-- 抓包基础设施：宿主创建后立即可用，早于记忆请求模块 -->
   <script src="modules/debug-inspector.js?v=20260405_21"></script>
   <script src="modules/task-hud.js?v=20260405_21"></script>

@@ -194,6 +194,7 @@
     qpResetBtn: document.getElementById('qp-reset-btn'),
     qpStream: document.getElementById('qp-stream'),
     qpRealTime: document.getElementById('qp-real-time'),
+    qpAntiTruncate: document.getElementById('qp-anti-truncate'),
     qpContextLimit: document.getElementById('qp-context-limit'),
     qpDynamicContext: document.getElementById('qp-dynamic-context'),
     qpTemperature: document.getElementById('qp-temperature'),
@@ -1635,7 +1636,10 @@
       stream: src.stream !== false,
       // 静默现实时间背景板开关（仅控制本次请求是否附带 <env_context>）
       realTime: src.realTime !== false,
-      antiTruncateEnabled: src.antiTruncateEnabled === true,
+      // 旧参数缺少开关时继承全局默认，显式关闭不受全局影响。
+      antiTruncateEnabled: src.antiTruncateEnabled === undefined
+        ? (globalChatParams || DEFAULT_CHAT_PARAMS).antiTruncateEnabled === true
+        : src.antiTruncateEnabled === true,
       antiTruncateMaxRetries: src.antiTruncateMaxRetries === '' || src.antiTruncateMaxRetries == null || !isFinite(Number(src.antiTruncateMaxRetries))
         ? 2 : Math.min(5, Math.max(1, Math.floor(Number(src.antiTruncateMaxRetries))))
     };
@@ -1750,8 +1754,7 @@
       current.topP !== base.topP ||
       current.maxTokens !== base.maxTokens ||
       current.stream !== base.stream ||
-      current.antiTruncateEnabled !== base.antiTruncateEnabled ||
-      current.antiTruncateMaxRetries !== base.antiTruncateMaxRetries
+      current.antiTruncateEnabled !== base.antiTruncateEnabled
     );
   }
 
@@ -7374,7 +7377,7 @@
       maxTokens: inputs.maxTokens ? inputs.maxTokens.value : '',
       stream: inputs.stream ? inputs.stream.checked !== false : true,
       realTime: inputs.realTime ? inputs.realTime.checked !== false : true,
-      // 快捷面板没有此控件时保留原分区配置，避免调整温度时误关续写。
+      // 快捷面板只编辑独立开关，安全阀兼容字段保留，请求时统一取全局值。
       antiTruncateEnabled: inputs.antiTruncateEnabled ? inputs.antiTruncateEnabled.checked : inputs.antiTruncateBase && inputs.antiTruncateBase.antiTruncateEnabled,
       antiTruncateMaxRetries: inputs.antiTruncateMaxRetries ? inputs.antiTruncateMaxRetries.value : inputs.antiTruncateBase && inputs.antiTruncateBase.antiTruncateMaxRetries
     };
@@ -7388,6 +7391,7 @@
       antiTruncateBase: getSessionParams(getCurrentSession()),
       stream: els.qpStream,
       realTime: els.qpRealTime,
+      antiTruncateEnabled: els.qpAntiTruncate,
       contextLimit: els.qpContextLimit,
       dynamicContextByMemory: els.qpDynamicContext,
       temperature: els.qpTemperature,
@@ -10906,6 +10910,8 @@
     // 精确读取冻结目标子对话，后台生成不跟随界面切换。
     var targetSubChat = (session.subChats || []).find(function (sub) { return sub.id === targetSubChatId; });
     var params = getSessionParams(session, targetSubChat);
+    // 安全阀只受全局设置控制，新老子对话均忽略历史副本中的次数。
+    params.antiTruncateMaxRetries = getGlobalChatParams().antiTruncateMaxRetries;
     var isStreamMode = params.stream !== false;
 
     // 本次请求的上下文截止楼层：中间楼层重答时绝不把后续楼层发给 API
@@ -11417,6 +11423,7 @@
       }
       retryCount++;
       task.continuationStatus = '检测到回复中断，正在自动续写 (' + retryCount + '/' + maxRetries + ')...';
+      showToast(task.continuationStatus);
       syncStreamingUiState();
       requestMessages = originalRequestMessages.concat([
         { role: 'assistant', content: accumulatedRawText },
@@ -15067,6 +15074,8 @@
       ['input', 'change'].forEach(function (evtName) {
         els.quickParamsPanel.addEventListener(evtName, function (e) {
           if (!e.target || e.target === els.quickParamsPanel) return;
+          // 开关只在 change 时提交，避免 input / change 重复持久化。
+          if (e.target === els.qpAntiTruncate && e.type !== 'change') return;
           if (e.target === els.qpDynamicContext) {
             if (e.type === 'change') handleDynamicContextToggle(e.target).then(function () { handleQuickParamsInput(); });
             return;
