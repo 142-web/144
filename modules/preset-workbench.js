@@ -12,6 +12,40 @@
   var activeSnippetSelection = null, snippetBar, snippetLabel;
   var search = { hits: [], current: -1, timer: null, presetId: '' };
   var textDrafts = new Map(), opening = false, renderFrame = 0;
+  // 成功反馈只存闭包内存，按动作及目标隔离，不因重绘或重复点击提前消失。
+  var savedFlashKeys = new Map(), savedFlashTimers = new Map();
+  function saveKey(action, presetId, moduleId) { return JSON.stringify([action, presetId, moduleId || '']); }
+  function paintSavedButton(button) {
+    var state = button._pwSavedState; if (!state) return;
+    var key = typeof state.key === 'function' ? state.key() : state.key;
+    var saved = (savedFlashKeys.get(key) || 0) > Date.now();
+    button.classList.toggle('is-saved-flash', saved);
+    button.querySelector('svg path').setAttribute('d', saved ? paths.check : state.icon);
+    state.label.textContent = saved ? '已保存' : state.text;
+    state.label.hidden = !saved && !state.text;
+    button.title = saved ? '已保存' : state.title;
+    button.setAttribute('aria-label', button.title);
+  }
+  function bindSavedButton(button, key) {
+    var label = button.querySelector('span');
+    if (!label) { label = el('span'); button.appendChild(label); }
+    button._pwSavedState = { key: key, icon: button.querySelector('svg path').getAttribute('d'),
+      label: label, text: label.textContent, title: button.title };
+    button.dataset.pwSave = 'true'; paintSavedButton(button); return button;
+  }
+  function paintSavedButtons() {
+    if (dialog) dialog.querySelectorAll('[data-pw-save]').forEach(paintSavedButton);
+  }
+  function flashSaved(key) {
+    clearTimeout(savedFlashTimers.get(key));
+    var expires = Date.now() + 1500; savedFlashKeys.set(key, expires);
+    function clear() {
+      var remaining = expires - Date.now();
+      if (remaining > 0) { savedFlashTimers.set(key, setTimeout(clear, remaining)); return; }
+      savedFlashKeys.delete(key); savedFlashTimers.delete(key); paintSavedButtons();
+    }
+    savedFlashTimers.set(key, setTimeout(clear, 1500)); paintSavedButtons();
+  }
   function draftKey(side, presetId, moduleId) { return JSON.stringify([side, presetId, moduleId]); }
   function collectTextDrafts() {
     panels.forEach(function (panel) {
@@ -335,7 +369,7 @@
       var copy = clone(m); copy.id = at < 0 ? newId(list) : dst.modules[at].id;
       if (at < 0) dst.modules.push(copy); else dst.modules[at] = copy;
     });
-    commit(list);
+    if (commit(list)) flashSaved(saveKey('fuse-' + from, src.id, dst.id));
   }
   function clone(value) { return JSON.parse(JSON.stringify(value)); }
   function wordGroups(m) {
@@ -430,7 +464,10 @@
         p.modules = clone(snapshots[at].modules);
       } else { snapshots.splice(at, 1); p.snapshots = snapshots; }
     }
-    if (commit(list) && action === 'save') panels[side].snapshotName.value = snapshotName();
+    if (commit(list) && action === 'save') {
+      panels[side].snapshotName.value = snapshotName();
+      flashSaved(saveKey('snapshot-' + side, p.id));
+    }
   }
   function positionSnapshots(side) {
     var panel = panels[side], box = panel.snapshots;
@@ -475,7 +512,7 @@
     if (!p) return notify('预设已失效');
     if (action === 'delete') p.modules = p.modules.filter(function (m) { return ids.indexOf(m.id) < 0; });
     else p.modules.forEach(function (m) { if (ids.indexOf(m.id) >= 0) m.enabled = action === 'enable'; });
-    commit(list);
+    if (commit(list)) flashSaved(saveKey('batch-' + side + '-' + action, presetId));
   }
   async function deletePreset(side) {
     var id = sides[side].presetId;
@@ -554,15 +591,19 @@
         if (editModule(side, p.id, m, function (target) {
           if (String(target.content || '').replace(/\r\n?/g, '\n') === text) { notify('正文未修改'); return false; }
           target.content = text;
-        }, true) && activeTask) {
-          activeTask.original = JSON.stringify(presets().find(function (item) { return item.id === p.id; }).modules.find(function (item) { return item.id === m.id; }));
-          activeTask.left = text; // 实际 before 字段为 left。
-          if (activeTask.snippet) { activeTask.snippet = null; clearSnippet(); }
-          clearDiffSelection(activeTask); refreshDiffEditor(activeTask);
-          activeTask.save.disabled = activeTask.left === activeTask.right;
+        }, true)) {
+          flashSaved(saveKey('text-' + side, p.id, m.id));
+          if (activeTask) {
+            activeTask.original = JSON.stringify(presets().find(function (item) { return item.id === p.id; }).modules.find(function (item) { return item.id === m.id; }));
+            activeTask.left = text; // 实际 before 字段为 left。
+            if (activeTask.snippet) { activeTask.snippet = null; clearSnippet(); }
+            clearDiffSelection(activeTask); refreshDiffEditor(activeTask);
+            activeTask.save.disabled = activeTask.left === activeTask.right;
+          }
         }
       });
       saveText.classList.add('pw-save-text'); saveText.appendChild(el('span', '', '保存文本框修改'));
+      bindSavedButton(saveText, saveKey('text-' + side, p.id, m.id));
       bar.appendChild(saveText);
       var wrap = el('div', 'pw-content-wrap'), mirror = el('div', 'pw-search-backdrop');
       mirror.hidden = true; mirror.setAttribute('aria-hidden', 'true'); wrap.append(mirror, editor);
@@ -919,6 +960,16 @@
   function render() {
     collectTextDrafts();
     var scrolls = panels.map(function (panel) { return panel.list.scrollTop; });
+    var editorViews = new Map();
+    panels.forEach(function (panel) {
+      panel.list.querySelectorAll('textarea.pw-content').forEach(function (editor) {
+        if (editor.closest('.pw-module-body').hidden) return;
+        editorViews.set(draftKey(Number(editor.dataset.side), editor.dataset.presetId, editor.dataset.moduleId), {
+          top: editor.scrollTop, left: editor.scrollLeft, start: editor.selectionStart,
+          end: editor.selectionEnd, direction: editor.selectionDirection, height: editor.style.height
+        });
+      });
+    });
     cancelAnimationFrame(renderFrame);
     resetSearch();
     if (searchResizeObserver) searchResizeObserver.disconnect();
@@ -1014,7 +1065,21 @@
     });
     syncLayout();
     if (search.bar && !search.bar.hidden) runSearch();
-    function restoreScroll() { panels.forEach(function (panel, i) { panel.list.scrollTop = scrolls[i]; }); }
+    paintSavedButtons();
+    function restoreScroll() {
+      panels.forEach(function (panel, i) {
+        panel.list.querySelectorAll('textarea.pw-content').forEach(function (editor) {
+          var view = editorViews.get(draftKey(Number(editor.dataset.side), editor.dataset.presetId, editor.dataset.moduleId));
+          if (!view || editor.closest('.pw-module-body').hidden) return;
+          editor.style.height = view.height;
+          editor.setSelectionRange(view.start, view.end, view.direction);
+          editor.scrollTop = view.top; editor.scrollLeft = view.left;
+          var mirror = editor.previousElementSibling;
+          if (mirror && !mirror.hidden) syncSearchMirror(editor, mirror);
+        });
+        panel.list.scrollTop = scrolls[i];
+      });
+    }
     restoreScroll(); renderFrame = requestAnimationFrame(restoreScroll);
   }
   function calculateSim(a, b, pa, pb) {
@@ -1236,8 +1301,8 @@
   function syncDiffSaveMode(task) {
     var partial = !!task.activeDiffRange, label = partial ? '仅替换框选区域' : '保存此模块';
     task.save.classList.toggle('is-partial-mode', partial);
-    task.save.title = label; task.save.setAttribute('aria-label', label);
-    task.saveLabel.textContent = label;
+    task.save._pwSavedState.text = label; task.save._pwSavedState.title = label;
+    paintSavedButton(task.save);
     task.selectionLabel.hidden = !partial;
   }
   function clearDiffSelection(task) {
@@ -1312,7 +1377,11 @@
     var copy = iconButton('copy', '复制比对结果（含红绿标记）', function () { copyDiffResult(task.editor); });
     copy.classList.add('pw-copy-diff');
     var count = el('span', 'pw-diff-selection-count'); count.setAttribute('role', 'status'); count.hidden = true;
-    save.classList.add('pw-save-diff'); head.append(title, copy, count, save);
+    save.classList.add('pw-save-diff');
+    bindSavedButton(save, saveKey('diff', task.presetId, task.moduleId));
+    title.title = title.textContent;
+    var actions = el('div', 'pw-actions pw-diff-actions'); actions.append(copy, count, save);
+    head.append(title, actions);
     var editor = createDiffEditor();
     task.editor = editor; task.save = save; task.card = card;
     task.activeDiffRange = null; task.saveLabel = saveLabel; task.selectionLabel = count;
@@ -1458,7 +1527,9 @@
         refreshDiffEditor(task);
         task.save.disabled = task.left === task.right;
       }
+      flashSaved(saveKey('diff', task.presetId, task.moduleId));
     });
+    if (all) flashSaved(saveKey('all', sides[0].presetId, sides[1].presetId));
     if (selectedRange) {
       window.getSelection().removeAllRanges();
       viewport.restore();
@@ -1502,6 +1573,8 @@
     fusionRight = iconButton('copyLeft', '← 将右栏已选融合至左栏', function () { fuseSelected(1); });
     fusionRight.appendChild(el('span', '', '融合至左栏'));
     compareButton = iconButton('compare', '对比已选模块差异', compare); compareButton.appendChild(el('span', '', '对比差异'));
+    bindSavedButton(fusionLeft, function () { return saveKey('fuse-0', sides[0].presetId, sides[1].presetId); });
+    bindSavedButton(fusionRight, function () { return saveKey('fuse-1', sides[1].presetId, sides[0].presetId); });
     fusionBar.append(fusionLeft, fusionRight, compareButton); dialog.appendChild(fusionBar);
     columns = el('div', 'pw-columns pw-workspace');
     sides.forEach(function (s, side) {
@@ -1523,7 +1596,10 @@
       var badge = el('span', 'pw-snapshot-badge', '0'); snapshotButton.appendChild(badge); bar.appendChild(snapshotButton);
       var snapshots = el('section', 'pw-snapshots'); snapshots.hidden = true; snapshots.setAttribute('aria-label', '版本快照');
       var snapshotInput = el('input'); snapshotInput.type = 'text'; snapshotInput.setAttribute('aria-label', '快照名称');
-      var snapshotTop = el('div', 'pw-word-bar'); snapshotTop.append(snapshotInput, iconButton('plus', '保存当前快照', function () { snapshotAction(side, 'save'); }));
+      var snapshotTop = el('div', 'pw-word-bar');
+      var snapshotSave = iconButton('plus', '保存当前快照', function () { snapshotAction(side, 'save'); });
+      bindSavedButton(snapshotSave, function () { return saveKey('snapshot-' + side, s.presetId); });
+      snapshotTop.append(snapshotInput, snapshotSave);
       var snapshotList = el('div', 'pw-snapshot-list'); snapshots.append(snapshotTop, snapshotList);
       var quickBar = el('div', 'pw-quick-bar'), quickModes = el('div', 'pw-quick-modes');
       var quickForm = el('div', 'pw-word-bar pw-quick-form'); quickForm.hidden = true;
@@ -1536,14 +1612,20 @@
         if (!Array.isArray(target.quickModes)) target.quickModes = [];
         target.quickModes.push({ id: 'mode_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10), name: name,
           enabledModuleIds: target.modules.filter(function (m) { return m.enabled === true; }).map(function (m) { return m.id; }) });
-        if (commit(data)) { quickForm.hidden = true; quickName.value = ''; }
+        if (commit(data)) {
+          flashSaved(saveKey('quick-' + side, target.id));
+          quickForm.hidden = true; quickName.value = '';
+        }
       }
       var quickAdd = iconButton('plus', '存为快捷模式', function () { quickPresetId = s.presetId; quickForm.hidden = false; quickName.focus(); });
       quickName.addEventListener('keydown', function (e) {
         if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); saveQuickMode(); }
         if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); quickForm.hidden = true; }
       });
-      quickForm.append(quickName, iconButton('check', '保存快捷模式', saveQuickMode), iconButton('close', '取消', function () { quickForm.hidden = true; }));
+      var quickSave = iconButton('check', '保存快捷模式', saveQuickMode);
+      bindSavedButton(quickSave, function () { return saveKey('quick-' + side, s.presetId); });
+      bindSavedButton(quickAdd, function () { return saveKey('quick-' + side, s.presetId); });
+      quickForm.append(quickName, quickSave, iconButton('close', '取消', function () { quickForm.hidden = true; }));
       quickBar.append(quickModes, quickAdd);
       var selection = el('div', 'pw-selection'), selectionCount = el('span');
       var selectAll = iconButton('selectAll', '全选', function () {
@@ -1553,7 +1635,10 @@
         sides[side].moduleId = ids.length ? ids[ids.length - 1] : ''; invalidate(); syncSelection(side); syncLayout();
       });
       var batchButtons = [iconButton('enabled', '批量启用', function () { batchModules(side, 'enable'); }), iconButton('disabled', '批量禁用', function () { batchModules(side, 'disable'); }), iconButton('trash', '批量删除', function () { batchModules(side, 'delete'); })];
-      selection.append(selectionCount, selectAll); batchButtons.forEach(function (b) { selection.appendChild(b); });
+      selection.append(selectionCount, selectAll); batchButtons.forEach(function (b, index) {
+        bindSavedButton(b, function () { return saveKey('batch-' + side + '-' + ['enable', 'disable', 'delete'][index], s.presetId); });
+        selection.appendChild(b);
+      });
       selection.appendChild(iconButton('close', '清空选择', function () {
         clearSelection(side); sides[side].moduleId = ''; invalidate(); syncSelection(side); syncLayout();
       }));
@@ -1601,6 +1686,7 @@
     collapseLabel.append(collapseInput, document.createTextNode('折叠未修改')); toolbar.appendChild(collapseLabel);
     saveAllButton = iconButton('check', '保存全部对比结果', saveAllEdited);
     saveAllButton.classList.add('pw-save-all'); saveAllButton.appendChild(el('span', '', '保存全部对比结果')); saveAllButton.disabled = true;
+    bindSavedButton(saveAllButton, function () { return saveKey('all', sides[0].presetId, sides[1].presetId); });
     toolbar.appendChild(saveAllButton);
     var closeReview = iconButton('close', '收起对比', function () { invalidate(); diffRows.replaceChildren(); syncLayout(); });
     closeReview.classList.add('pw-close-review'); toolbar.appendChild(closeReview);

@@ -9308,7 +9308,8 @@
   /**
    * 关闭小模块编辑窗口：不做任何保存（严格保存门禁）
    */
-  function closeModuleEditModal() {
+  function closeModuleEditModal(e) {
+    if (e && e.stopPropagation) e.stopPropagation();
     editingModuleRef = null;
     if (!els.moduleEditModal) return;
     blurInside(els.moduleEditModal);
@@ -14988,6 +14989,9 @@
         topPresetOpen &&
         els.topPresetWrap &&
         !subModalOpen &&
+        // 关闭后 show 已移除，仍按事件来源豁免子弹窗的整条点击路径。
+        !(els.moduleEditModal && (els.moduleEditModal.contains(e.target) ||
+          (e.composedPath && e.composedPath().indexOf(els.moduleEditModal) >= 0))) &&
         !els.topPresetWrap.contains(e.target) &&
         !(e.composedPath && e.composedPath().indexOf(els.topPresetWrap) >= 0) &&
         !e.target.closest('.preset-picker-menu, .feature-help-overlay, .app-dialog-overlay') &&
@@ -15567,7 +15571,10 @@
       if (!modalEl) return;
 
       modalEl.addEventListener('click', function (e) {
-        if (e.target === modalEl) closeFn();
+        if (modalEl === els.moduleEditModal) e.stopPropagation();
+        if (e.target === modalEl) {
+          if (modalEl === els.moduleEditModal) closeFn(e); else closeFn();
+        }
       });
     });
 
