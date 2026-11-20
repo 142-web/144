@@ -143,16 +143,36 @@
     // 只接受明确的 AI 楼层；现宿主使用 .msg-ai，用户及未知角色一律跳过。
     if (!body.closest('.msg-ai, .msg.assistant, .message.assistant, [data-role="assistant"]') ||
         body.closest('.msg-user, .msg.user, .message.user, [data-role="user"]')) return;
-    var skip = excluded.replace(', .plugin-dialogue-quote', '').replace('.plugin-dialogue-quote,', '');
+    var skip = excluded.replace(', .plugin-dialogue-quote', '').replace('.plugin-dialogue-quote,', '') + ',h1,h2,h3,h4,h5,h6,table';
+    var blocks = 'p,div,li,blockquote,td,th,dd';
     var groups = new Map();
+    function hasBreakAfter(node, block) {
+      // Range 在文本末尾或行内父级之外都可能留下标记，逐层检查紧邻节点。
+      while (node && node !== block) {
+        var next = node.nextSibling;
+        while (next && next.nodeType === 3 && !next.data) next = next.nextSibling;
+        if (next) return next.nodeType === 1 && next.classList.contains('plugin-period-break');
+        node = node.parentNode;
+      }
+      return false;
+    }
     var walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
       acceptNode: function (node) {
-        return node.parentElement && !node.parentElement.closest(skip) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        if (!node.parentElement || node.parentElement.closest(skip)) return NodeFilter.FILTER_REJECT;
+        // 隐藏文本不能被当作段尾后的正文，避免凭空增加段尾间距。
+        var parent = node.parentElement;
+        while (parent && body.contains(parent)) {
+          var style = getComputedStyle(parent);
+          if (parent.hidden || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return NodeFilter.FILTER_REJECT;
+          if (parent === body) break;
+          parent = parent.parentElement;
+        }
+        return NodeFilter.FILTER_ACCEPT;
       }
     });
     while (walker.nextNode()) {
       var node = walker.currentNode;
-      var block = node.parentElement.closest('p,li,blockquote,h1,h2,h3,h4,h5,h6,div') || body;
+      var block = node.parentElement.closest(blocks) || body;
       if (!body.contains(block)) block = body;
       if (!groups.has(block)) groups.set(block, []);
       groups.get(block).push(node);
@@ -160,13 +180,18 @@
     groups.forEach(function (nodes, block) {
       var text = '', offsets = [];
       nodes.forEach(function (node) { offsets.push(text.length); text += node.data; });
-      var pattern = /。[”"]*/g, match, points = [];
+      var pattern = /。+[”"’'」』）)\]】》>〕}]*/g, match, points = [];
       while ((match = pattern.exec(text))) {
         var at = match.index + match[0].length, rest = text.slice(at);
         if (!rest.trim() || /^\s*\n/.test(rest)) continue;
         var index = nodes.length - 1;
         while (index > 0 && offsets[index] >= at) index--;
         var target = nodes[index], offset = at - offsets[index];
+        // 跨行内闭合标点已由整段匹配吞并；边界仍有闭合标点时宁可不换行。
+        if (offset === target.data.length) {
+          if (nodes[index + 1] && /^[”"’'」』）)\]】》>〕}]/.test(nodes[index + 1].data)) continue;
+          if (hasBreakAfter(target, block)) continue;
+        }
         // BR、嵌套块或禁区之间不是同一连续正文，不跨越这些边界换行。
         var range = document.createRange(); range.setStart(target, offset);
         var next = index;
@@ -174,10 +199,11 @@
         if (next >= nodes.length) continue;
         range.setEnd(nodes[next], nodes[next].data.length);
         var fragment = range.cloneContents();
-        if (fragment.querySelector('br,pre,code,a,details,textarea,input,script,style,div,p,li')) continue;
+        if (fragment.querySelector(skip + ',br,' + blocks + ',.plugin-period-break')) continue;
         points.push({ node: target, offset: offset });
       }
       points.reverse().forEach(function (point) {
+        if (point.offset === point.node.data.length && hasBreakAfter(point.node, block)) return;
         var range = document.createRange(); range.setStart(point.node, point.offset); range.collapse(true);
         var span = document.createElement('span'); span.className = 'plugin-period-break'; span.setAttribute('aria-hidden', 'true');
         range.insertNode(span);
