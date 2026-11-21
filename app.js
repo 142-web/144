@@ -13281,7 +13281,7 @@
 
   // 哈希缓存只保留当前一代分块；必须重算内容指纹，不能以可变对象引用判断未变。
   var layeredGzipCache = new Map();
-  var s3BackupInFlight = false;
+  var isCloudHistoryWorking = false;
 
   function layeredObjectKey(kind, sid, subId, index) {
     return 'mychat_' + kind + '_' + encodeURIComponent(String(sid)) +
@@ -13997,7 +13997,7 @@
    * @param {boolean} fromSync 是否由同步流程调用（true 时沿用当前按钮状态）
    */
   async function uploadToCloud(fromSync) {
-    if (cloudSyncPausedByCancel) return;
+    if (cloudSyncPausedByCancel || isCloudHistoryWorking) return;
     if (!isSyncConfigured()) return;
 
     // 防连点锁：已有同步 / 上传任务在进行时直接忽略本次触发
@@ -14063,11 +14063,8 @@
     localStorage.setItem(LAST_SYNCED_CLOUD_STAMP_KEY, String(stamp));
     lastSyncAt = Date.now();
     setSyncStatus('ok');
-    if (s3BackupInFlight) return;
-    // 固化本轮数据，避免后台压缩期间会话继续变动；主流程不等待历史请求。
-    var historyJson = JSON.stringify(layered.payload);
-    s3BackupInFlight = true;
-    maintainS3LayeredBackup(historyJson, now).finally(function () { s3BackupInFlight = false; });
+    // 仅交付轻量清单；历史间隔通过前不复制、序列化或保留完整载荷。
+    maintainS3LayeredBackup({ lastModified: stamp, manifest: manifest }, now);
   }
 
   // 历史配置与索引属于云同步主干，不增加独立插件或消息管道。
@@ -14193,29 +14190,24 @@
     index.exists = true;
   }
 
-  async function cloudHistoryFingerprint(payload) {
-    var data = Object.assign({}, payload);
-    delete data.lastModified;
-    return layeredHash(JSON.stringify(data, function (_, value) {
-      if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-      var sorted = Object.create(null);
-      Object.keys(value).sort().forEach(function (key) { sorted[key] = value[key]; });
-      return sorted;
-    }));
+  function cloudHistoryManifestFingerprint(manifest) {
+    if (!manifest || !manifest.chunks) return '';
+    // 只拼接主同步已算好的分块哈希，不遍历消息、不再次计算 SHA-256。
+    return JSON.stringify([manifest.sessionOrder, Object.keys(manifest.chunks).sort().map(function (key) {
+      return [key, manifest.chunks[key].hash];
+    })]);
   }
 
-  async function uploadCloudHistorySnapshot(json, reason, now, identity, index, fingerprint) {
-    var payload = JSON.parse(json);
-    var stats = collectRestoreStats(payload);
+  async function uploadCloudHistorySnapshot(json, reason, now, identity, index, metadata) {
     var time = new Date(now), pad = function (n) { return String(n).padStart(2, '0'); };
-    // 随机后缀防同秒覆盖；历史正文先 UTF-8 Base64 反转混淆，再 Gzip。
+    // 随机后缀防同秒覆盖；JSON 直接压缩成二进制，与 R2 主同步一致。
     var nonce = Array.from(crypto.getRandomValues(new Uint32Array(2))).map(function (n) { return n.toString(36); }).join('-');
     var key = 'history/mychat_backup_' + formatDateKey(now) + '_' + pad(time.getHours()) + pad(time.getMinutes()) + pad(time.getSeconds()) + '_' + nonce + '.gz';
-    var encoded = uint8ToBase64Fast(new TextEncoder().encode(json)).split('').reverse().join('');
-    var bytes = await compressStringToGzipBytes(JSON.stringify({ _encrypted: true, payload: encoded }));
+    var bytes = await compressStringToGzipBytes(json);
     await cloudHistoryRequest(identity, 'PUT', key, bytes, 'application/gzip');
-    var snapshot = { key: key, timestamp: now, sessionCount: stats.sessionsCount,
-      totalMessages: stats.messagesCount, size: bytes.byteLength, reason: reason, fingerprint: fingerprint };
+    var snapshot = { key: key, timestamp: now, sessionCount: metadata.sessionCount,
+      totalMessages: metadata.totalMessages, size: bytes.byteLength, reason: reason,
+      lastModified: metadata.lastModified, manifestFingerprint: metadata.manifestFingerprint || '' };
     index.snapshots.unshift(snapshot);
     // 索引提交失败同样视为保险失败，调用方不得开始恢复。
     await writeCloudHistoryIndex(identity, index);
@@ -14260,19 +14252,29 @@
     }
   }
 
-  async function maintainS3LayeredBackup(payloadJson, now) {
+  async function maintainS3LayeredBackup(metadata, now) {
+    if (isCloudHistoryWorking) return;
+    isCloudHistoryWorking = true;
     try {
       var identity = cloudHistoryIdentity(), settings = getCloudHistoryConfig();
-      var payload = typeof payloadJson === 'string' ? JSON.parse(payloadJson) : payloadJson;
-      var fingerprint = await cloudHistoryFingerprint(payload);
       var index = await readCloudHistoryIndex(identity), latest = index.snapshots[0];
-      if (latest && latest.fingerprint === fingerprint) return;
-      if (latest && now - latest.timestamp < settings.activeIntervalMinutes * 60000) return;
-      await uploadCloudHistorySnapshot(JSON.stringify(payload), 'auto', now, identity, index, fingerprint);
+      var latestAuto = index.snapshots.find(function (item) { return item.reason === 'auto'; });
+      // 第一关仅查看轻量索引，未满间隔绝不接触全量载荷。
+      if (latestAuto && now - latestAuto.timestamp < settings.activeIntervalMinutes * 60000) return;
+      var fingerprint = cloudHistoryManifestFingerprint(metadata.manifest);
+      if (latest && (latest.lastModified === metadata.lastModified ||
+          (fingerprint && latest.manifestFingerprint === fingerprint))) return;
+      // 索引请求期间若本机变化，留待下轮主同步，避免给旧清单归档新正文。
+      if (getLocalLastModified() && getLocalLastModified() !== metadata.lastModified) return;
+      var payload = buildCloudPayload(metadata.lastModified, true);
+      var stats = collectRestoreStats(payload);
+      var snapshotMeta = { lastModified: metadata.lastModified, manifestFingerprint: fingerprint,
+        sessionCount: stats.sessionsCount, totalMessages: stats.messagesCount };
+      await uploadCloudHistorySnapshot(JSON.stringify(payload), 'auto', now, identity, index, snapshotMeta);
       await cleanupCloudHistory(identity, index, now, settings);
     } catch (err) {
       console.warn('[云同步] S3 历史维护跳过：', err);
-    }
+    } finally { isCloudHistoryWorking = false; }
   }
 
   function formatCloudHistoryTime(timestamp) {
@@ -14320,41 +14322,49 @@
   }
 
   async function restoreCloudHistorySnapshot(target) {
-    if (isSyncing || s3BackupInFlight || activeGenerationMap.size) { showToast('请等待当前任务结束'); return; }
+    if (isSyncing || isCloudHistoryWorking || activeGenerationMap.size) { showToast('请等待当前任务结束'); return; }
     var identity = cloudHistoryIdentity();
     if (!await window.showAppConfirm('恢复 ' + formatCloudHistoryTime(target.timestamp) + '？将先备份本机当前数据。')) return;
-    if (isSyncing || s3BackupInFlight || activeGenerationMap.size) { showToast('请等待当前任务结束'); return; }
-    isSyncing = true; s3BackupInFlight = true;
+    if (isSyncing || isCloudHistoryWorking || activeGenerationMap.size) { showToast('请等待当前任务结束'); return; }
+    isSyncing = true; isCloudHistoryWorking = true;
     try {
       assertCloudHistoryIdentity(identity);
       requireStorageWrite(flushSave());
-      var json = JSON.stringify(buildCloudPayload(getLocalLastModified() || Date.now(), false));
-      var fingerprint = await cloudHistoryFingerprint(JSON.parse(json));
+      var localStamp = getLocalLastModified();
+      var localPayload = buildCloudPayload(localStamp || Date.now(), false);
+      var stats = collectRestoreStats(localPayload);
+      var snapshotMeta = { lastModified: localPayload.lastModified,
+        sessionCount: stats.sessionsCount, totalMessages: stats.messagesCount };
+      var json = JSON.stringify(localPayload);
+      localPayload = null;
       var index = await readCloudHistoryIndex(identity);
       if (!index.snapshots.some(function (item) { return item.key === target.key; })) throw new Error('目标历史已移除，请刷新');
       try {
-        await uploadCloudHistorySnapshot(json, 'pre_restore', Date.now(), identity, index, fingerprint);
+        await uploadCloudHistorySnapshot(json, 'pre_restore', Date.now(), identity, index, snapshotMeta);
+        json = null;
       } catch (err) { throw new Error('恢复前备份失败，已中止恢复：' + err.message); }
       // 保险提交成功后才准下载目标；不触发清理，避免误删目标或保险。
       var response = await cloudHistoryRequest(identity, 'GET', target.key);
       if (!response) throw new Error('目标历史不存在');
       var raw = await decompressGzipBytesToString(new Uint8Array(await response.arrayBuffer()));
-      var decoded = await decryptCloudContentAsync(raw);
-      var data = typeof decoded === 'string' ? JSON.parse(decoded) : decoded;
+      var data = JSON.parse(raw);
+      if (data && data._encrypted === true && typeof data.payload === 'string') {
+        var decoded = await decryptCloudContentAsync(data);
+        data = typeof decoded === 'string' ? JSON.parse(decoded) : decoded;
+      }
       if (!data || !Array.isArray(data.sessions)) throw new Error('历史数据无效');
       var payload = normalizeCloudPayloadData(data);
       // 下载期间若本机发生变化，不冒险覆盖尚未包含于保险的新数据。
       requireStorageWrite(flushSave());
-      var currentFingerprint = await cloudHistoryFingerprint(buildCloudPayload(getLocalLastModified(), false));
       assertCloudHistoryIdentity(identity);
-      if (activeGenerationMap.size || currentFingerprint !== fingerprint) throw new Error('本机数据已变化，请重新恢复');
+      if (activeGenerationMap.size || getLocalLastModified() !== localStamp) throw new Error('本机数据已变化，请重新恢复');
       applyCloudData(payload, { source: 'cloud' });
       // 历史时间不是主清单版本，不允许用它伪造自动上传的一致性基线。
       localStorage.removeItem(LAST_SYNCED_CLOUD_STAMP_KEY);
       fillCloudHistoryConfig();
       showToast('已恢复，原数据已留档');
     } catch (err) { showToast('恢复失败：' + err.message); }
-    finally { isSyncing = false; s3BackupInFlight = false; refreshCloudHistoryList(); }
+    finally { isSyncing = false; isCloudHistoryWorking = false; refreshCloudHistoryList(); }
   }
 
   async function doUploadToCloud(fromSync, isManualPush, remote) {
@@ -14565,6 +14575,10 @@
    * @param {boolean} retried 是否已因 Gist 失效重试过
    */
   async function syncWithCloud(silent, retried, isManual) {
+    if (isCloudHistoryWorking) {
+      if (!silent) showToast('请等待历史存档结束');
+      return;
+    }
     if (isManual === true) cloudSyncPausedByCancel = false;
     else if (cloudSyncPausedByCancel) return;
     if (silent && !config.autoSync) { isStartupSyncSettled = true; return; }
