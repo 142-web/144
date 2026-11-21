@@ -10501,7 +10501,8 @@
       return sub.id === (targetSubChatId || macroSession.activeSubChatId);
     }) : macroSession;
     var cursor = Number(owner && owner.memoryData && owner.memoryData.summarizedFloorCursor || summarizedFloorCursor || 0);
-    var dynamic = !!(macroSession && getSessionParams(macroSession, owner).dynamicContextByMemory && cursor > 0);
+    var memorySummaryEnabled = !!(owner && owner.memoryData && owner.memoryData.enabled === true);
+    var dynamic = !!(macroSession && getSessionParams(macroSession, owner).dynamicContextByMemory && memorySummaryEnabled === true);
     var result = [];
     source.forEach(function (msg, idx) {
       if (!msg) return;
