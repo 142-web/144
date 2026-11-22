@@ -434,35 +434,21 @@
     }
     function centerTarget() {
       if (stopped || getCurrentId() !== sessionId || !area.contains(node)) return;
-      var targetTop = node.getBoundingClientRect().top - area.getBoundingClientRect().top - area.clientTop + area.scrollTop;
-      var desired = Math.max(0, targetTop - (area.clientHeight - node.offsetHeight) / 2);
+      var targetEl = node.querySelector('mark.search-highlight-flash, span.search-highlight-flash') || node;
+      var targetTop = targetEl.getBoundingClientRect().top - area.getBoundingClientRect().top - area.clientTop + area.scrollTop;
+      // 优先定位关键词；超长消息未命中高亮时顶部对齐，避免居中偏离命中位置。
+      var desired = targetEl.offsetHeight <= area.clientHeight * 0.8
+        ? Math.max(0, targetTop - (area.clientHeight - targetEl.offsetHeight) / 2)
+        : Math.max(0, targetTop - 24);
       desired = Math.min(desired, Math.max(0, area.scrollHeight - area.clientHeight));
-      var beforeScrollTop = area.scrollTop;
       if (Math.abs(area.scrollTop - desired) > 3) area.scrollTop = desired;
-      console.log('[SearchDebug]', {
-        targetFloor: targetFloor,
-        nodeFloor: node.dataset && node.dataset.floor,
-        nodeHeight: node.offsetHeight,
-        areaClientHeight: area.clientHeight,
-        areaScrollHeight: area.scrollHeight,
-        beforeScrollTop: beforeScrollTop,
-        desired: desired,
-        afterScrollTop: area.scrollTop
-      });
     }
     cancelPositionCheck = cleanup;
     events.forEach(function (type) { area.addEventListener(type, cleanup, { capture: true, passive: true }); });
-    centerTarget();
     flashSearchKeyword(node);
+    centerTarget();
     frame = window.requestAnimationFrame(function () { frame = null; centerTarget(); });
     timer = window.setTimeout(function () { timer = null; centerTarget(); cleanup(); }, 120);
-    window.setTimeout(function () {
-      console.log('[SearchDebug:300ms]', {
-        finalScrollTop: area.scrollTop,
-        nodeRectTop: Math.round(node.getBoundingClientRect().top),
-        areaRectTop: Math.round(area.getBoundingClientRect().top)
-      });
-    }, 300);
   }
 
   /**
@@ -549,14 +535,14 @@
       });
     }
 
-    // 点击结果项：跳转并收起浮层
+    // 点击结果项：保留浮层并更新激活项。
     if (els.chatSearchDropdown) {
       els.chatSearchDropdown.addEventListener('click', function (e) {
         var item = e.target.closest ? e.target.closest('.search-result-item') : null;
         if (!item) return;
         var index = Number(item.getAttribute('data-result-index'));
         if (!Number.isInteger(index)) return;
-        selectSearchResult(index, false);
+        selectSearchResult(index, true);
       });
     }
 
