@@ -507,6 +507,15 @@
   function compactMemorySnapshots(data) {
     try {
     if (!data || !Array.isArray(data.snapshots)) return data;
+    // 当前格式直接复用；只有旧快照需要迁移时才复制，避免保存前反复深拷贝。
+    var needsCompaction = data.snapshots.some(function (snap) {
+      return !snap || Array.isArray(snap.eventEntries) || Array.isArray(snap.events) ||
+        typeof snap.overview !== 'string' ||
+        Object.prototype.hasOwnProperty.call(snap, 'overviewEntry') ||
+        Object.prototype.hasOwnProperty.call(snap, 'overviewContent') ||
+        Object.prototype.hasOwnProperty.call(snap, 'globalOverviewContent');
+    });
+    if (!needsCompaction) return data;
     // 在副本完成全部整理后再提交，异常时不留下半迁移的历史快照。
     var snaps = JSON.parse(JSON.stringify(data.snapshots.filter(Boolean)));
     var hasFull = snaps.some(function (snap) { return Array.isArray(snap.eventEntries) || Array.isArray(snap.events); });
@@ -2091,6 +2100,7 @@
     var owner = memoryOwner(session);
     var meta = getMeta(session, owner);
     meta.autoSummary = consoleEls.auto.checked;
+    if (consoleEls.auto.checked) getMemoryData(session, owner).enabled = true;
     meta.autoInterval = clampInt(consoleEls.interval.value, 2, 200, 20);
     meta.floorInterval = meta.autoInterval;
     meta.summaryRetryCount = clampInt(consoleEls.summaryRetry.value, 0, 10, 2);
@@ -2814,7 +2824,14 @@
     // 打开控制台
     openConsole: openConsole,
     getVirtualMemoryBook: getVirtualMemoryBook,
-    onContextChanged: function () { refreshTokenMeter(true); renderConsoleIfOpen(); },
+    onContextChanged: function () {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(function () {
+        refreshTimer = null;
+        refreshTokenMeter(true);
+        renderConsoleIfOpen();
+      }, 120);
+    },
     createDefaultMemoryState: createDefaultMemoryState,
     normalizeEventObject: normalizeEventObject,
     normalizeMemoryEvent: normalizeMemoryEvent,

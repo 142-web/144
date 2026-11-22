@@ -1305,14 +1305,26 @@
     buildRequestPreview: function (session, draft) {
       var original = session || getCurrentSession();
       if (!original) return {apiMessages:[], history:[], injectedEntries:[], presetModules:[]};
-      var snapshot = safeClone(original);
-      snapshot.params = getSessionParams(original);
+      var snapshot = Object.assign({}, original);
+      var subId = snapshot.activeSubChatId || '';
+      var sourceOwner = original.subChats && original.subChats.find(function (sub) { return sub.id === subId; });
+      var owner = sourceOwner ? Object.assign({}, sourceOwner) : snapshot;
+      snapshot.params = cloneChatParams(owner.params || original.params || getGlobalChatParams());
+      owner.params = Object.assign({}, snapshot.params);
+      snapshot.messages = (original.messages || []).slice();
+      owner.messages = snapshot.messages;
+      if (sourceOwner) snapshot.subChats = [owner];
+      // 宏赋值仅修改预览字典，附件与记忆快照保持只读共享。
+      snapshot.tavernVars = Object.assign({}, original.tavernVars || {});
       var sourceCount = snapshot.messages.length;
       if (String(draft || '').trim()) snapshot.messages.push({role:'user', content:String(draft).trim()});
-      var subId = snapshot.activeSubChatId || '';
-      var owner = snapshot.subChats && snapshot.subChats.find(function (sub) { return sub.id === subId; }) || snapshot;
-      owner.messages = snapshot.messages;
       var cursor = owner.memoryData && owner.memoryData.summarizedFloorCursor || 0;
+      if (owner && owner.memoryMeta && owner.memoryMeta.autoSummary === true) {
+        var autoInterval = Math.max(1, Number(owner.memoryMeta.autoInterval) || 20);
+        if (sourceCount - cursor >= autoInterval) {
+          cursor = cursor + Math.floor((sourceCount - cursor) / autoInterval) * autoInterval;
+        }
+      }
       var macros = window.MyChatTavernMacros;
       function build() {
         var preset = getPresetById(snapshot.presetId);
@@ -7476,7 +7488,8 @@
       ? window.MemorySummaryModule.getActiveMemoryData(session) : null;
     if (!memory) return false;
     var memoryData = memory.memoryData || (memory.owner && memory.owner.memoryData) || null;
-    var isMemEnabled = Boolean(memoryData && memoryData.enabled);
+    var owner = memory.owner;
+    var isMemEnabled = !!((memoryData && memoryData.enabled === true) || (owner && owner.memoryMeta && owner.memoryMeta.autoSummary === true));
     var chunkStep = Number(memory.chunkFloors || memoryData && memoryData.chunkFloors || 20);
     var cursor = Number(memoryData && memoryData.summarizedFloorCursor || 0);
     var unsummarizedCount = Math.max(0, Number(memory.totalValidMessages || 0) - cursor);
@@ -10500,8 +10513,8 @@
     var owner = macroSession && Array.isArray(macroSession.subChats) ? macroSession.subChats.find(function (sub) {
       return sub.id === (targetSubChatId || macroSession.activeSubChatId);
     }) : macroSession;
-    var cursor = Number(owner && owner.memoryData && owner.memoryData.summarizedFloorCursor || summarizedFloorCursor || 0);
-    var memorySummaryEnabled = !!(owner && owner.memoryData && owner.memoryData.enabled === true);
+    var cursor = Number(typeof summarizedFloorCursor === 'number' ? summarizedFloorCursor : owner && owner.memoryData && owner.memoryData.summarizedFloorCursor || 0);
+    var memorySummaryEnabled = !!(owner && ((owner.memoryData && owner.memoryData.enabled === true) || (owner.memoryMeta && owner.memoryMeta.autoSummary === true)));
     var dynamic = !!(macroSession && getSessionParams(macroSession, owner).dynamicContextByMemory && memorySummaryEnabled === true);
     var result = [];
     source.forEach(function (msg, idx) {
@@ -10787,18 +10800,16 @@
 
     // 正式入库后清空会话草稿；配置校验失败时保留。
     session.inputDraft = '';
-    // 2. 刷新会话时间戳与全局时间戳，并立即落盘，防止刷新丢消息
+    // 2. 先清空输入并绘制用户气泡，存盘让出首帧。
     session.updatedAt = Date.now();
-    flushSave();
-    touchLastModified(); // 发送消息属于全局修改，刷新同步时间戳
-    // 自动总结由统一请求入口等待，禁止在此启动并行后台任务。
-    renderSessionList();
-    renderMessages();
-    forceScrollToBottom(); // 发送后强制回到底部并恢复自动跟随
-
-    // 3. 清空输入框
     els.input.value = '';
     autoGrowInput();
+    renderMessages();
+    forceScrollToBottom(); // 发送后强制回到底部并恢复自动跟随
+    renderSessionList();
+    touchLastModified(); // 发送消息属于全局修改，刷新同步时间戳
+    scheduleSave();
+    // 自动总结由统一请求入口等待，禁止在此启动并行后台任务。
 
     // 4. 请求并流式接收 AI 回复
     await requestAssistantReply(targetSession, { subChatId: targetSubChatId, targetMessages: targetMessages,
