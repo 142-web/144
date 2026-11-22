@@ -509,7 +509,9 @@
   async function batchModules(side, action) {
     var presetId = sides[side].presetId, ids = selectedIds(side).slice();
     if (!ids.length) return;
-    if (action === 'delete' && !await window.showAppConfirm('删除所选模块？')) return;
+    if (action === 'delete' && !await window.showAppConfirm({
+      title: '删除模块', message: '删除所选模块？', confirmText: '确认', cancelText: '取消', danger: true
+    })) return;
     var list = presets(), p = list.find(function (item) { return item.id === presetId; });
     if (!p) return notify('预设已失效');
     if (action === 'delete') p.modules = p.modules.filter(function (m) { return ids.indexOf(m.id) < 0; });
@@ -519,7 +521,9 @@
   async function deletePreset(side) {
     var id = sides[side].presetId;
     if (presets().length <= 1) return notify('至少保留一个预设');
-    if (!await window.showAppConfirm('删除当前预设？')) return;
+    if (!await window.showAppConfirm({
+      title: '删除预设', message: '删除当前预设？', confirmText: '确认', cancelText: '取消', danger: true
+    })) return;
     var list = presets();
     if (list.length <= 1) return notify('至少保留一个预设');
     if (!list.some(function (p) { return p.id === id; })) return notify('预设已失效');
@@ -663,8 +667,12 @@
     });
     addGroup.classList.add('pw-add-group'); body.appendChild(addGroup);
   }
-  function removeModule(side, id) {
-    var list = presets(), p = presetAt(list, side);
+  async function removeModule(side, id) {
+    var presetId = sides[side].presetId;
+    if (!await window.showAppConfirm({
+      title: '删除模块', message: '删除当前模块？', confirmText: '确认', cancelText: '取消', danger: true
+    })) return;
+    var list = presets(), p = list.find(function (item) { return item.id === presetId; });
     var at = p ? p.modules.findIndex(function (m) { return m.id === id; }) : -1;
     if (at < 0) return notify('模块已失效');
     p.modules.splice(at, 1); commit(list);

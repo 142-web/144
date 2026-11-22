@@ -2993,10 +2993,12 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 
 /* === [ANCHOR: CSS_APP_DIALOGS] 应用内异步弹窗，独立于业务模态 === */
 .app-dialog-overlay {
-  position: fixed; inset: 0; z-index: 2147483000;
+  position: fixed; inset: 0; z-index: 2147483647;
+  width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border: 0;
   display: flex; align-items: center; justify-content: center;
   padding: 12px; box-sizing: border-box; background: rgba(0, 0, 0, .42);
 }
+.app-dialog-overlay::backdrop { background: transparent; }
 .app-dialog-overlay[hidden], .app-dialog-card [hidden] { display: none !important; }
 .app-dialog-card {
   box-sizing: border-box; width: 260px; max-width: calc(100vw - 24px);

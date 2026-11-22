@@ -70,7 +70,7 @@
   }
   function ensureRoot() {
     if (root) return;
-    root = document.createElement('div');
+    root = document.createElement('dialog');
     root.className = 'app-dialog-overlay';
     root.hidden = true;
     var card = document.createElement('div');
@@ -96,6 +96,7 @@
     card.append(title, message, input, actions);
     root.appendChild(card);
     document.body.appendChild(root);
+    root.addEventListener('cancel', function (event) { event.preventDefault(); finish(false); });
     cancel.addEventListener('click', function () { finish(false); });
     accept.addEventListener('click', function () { finish(true); });
     root.addEventListener('click', function (event) { if (event.target === root) finish(false); });
@@ -123,6 +124,8 @@
     // 复用主题危险色，每次显示都重置，避免队列样式泄漏。
     accept.style.color = active.options.danger ? 'var(--danger, #d14343)' : '';
     root.hidden = false;
+    // 原生模态进入浏览器顶层，避免被工作台等 showModal 弹窗遮挡或禁用。
+    root.showModal();
     reset();
     focus(input.hidden ? accept : input);
     if (!input.hidden) input.select();
@@ -131,6 +134,7 @@
     if (!active) return;
     var item = active;
     active = null;
+    root.close();
     root.hidden = true;
     reset();
     focus(item.previousFocus);
