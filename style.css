@@ -1907,12 +1907,12 @@ body {
 
 /* 轻量本地工具：词汇管理与快速回复（不依赖外部组件）。 */
 .local-tools-overlay {
-  position: fixed; inset: 0; z-index: 1200; background: rgba(0,0,0,.38);
-  display: flex; align-items: center; justify-content: center; padding: 16px;
+    z-index: 1200; background: rgba(0,0,0,.38);
+     padding: 16px;
 }
 .local-tools-card {
   width: min(900px,100%); max-height: 88dvh; overflow: auto; padding: 22px;
-  border: 1px solid var(--border); border-radius: 14px;
+   border-radius: 14px;
   background: var(--bg, #f8f8f8); color: var(--text, #222);
   box-shadow: 0 16px 60px rgba(0,0,0,.2);
 }
@@ -2926,14 +2926,9 @@ body {
    设置弹窗（Modal）
    =================================================================== */
 .modal {
-  position: fixed;
-  inset: 0;
   z-index: 50;
   display: none;
-  align-items: center;
-  justify-content: center;
   padding: 16px;
-  background: rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(2px);
 }
 
@@ -2947,10 +2942,7 @@ body {
   max-height: 90vh;
   overflow-y: auto;
   padding: 20px;
-  border: 1px solid var(--border);
   border-radius: 16px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
   animation: modal-in 0.16s ease-out;
 }
 
@@ -2960,11 +2952,11 @@ body {
 body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 .plugin-hub-modal { z-index: 68; backdrop-filter: blur(5px); }
 .plugin-hub-modal.hidden { display: none; }
-.modal-card.plugin-hub-card { width: 260px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 14px; display: flex; flex-direction: column; gap: 12px; color: var(--text); overflow: hidden; }
-.plugin-hub-card header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.modal-card.plugin-hub-card { width: 260px; padding: 14px; gap: 12px; }
+
 .plugin-hub-card h2 { margin: 0; font-size: 15px; }
-.plugin-hub-card header button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-dim); cursor: pointer; }
-.plugin-hub-card header button:hover { color: var(--text); background: var(--quote-bg); }
+.plugin-hub-card header button { display: grid; place-items: center; }
+.plugin-hub-card header button:hover { background: var(--quote-bg); }
 .plugin-hub-search { display: flex; align-items: center; gap: 7px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); color: var(--text-dim); }
 .plugin-hub-search svg { flex-shrink: 0; }
 .plugin-hub-search:focus-within { border-color: var(--accent); }
@@ -2981,10 +2973,10 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 
 /* === [ANCHOR: CSS_EXTERNAL_IMPORT] 外部对话导入紧凑弹窗 === */
 .external-import-modal[hidden] { display: none; }
-.external-import-modal { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 12px; background: rgba(0,0,0,.38); }
-.external-import-card { box-sizing: border-box; width: 260px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: 0 12px 36px rgba(0,0,0,.2); display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
-.external-import-card header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.external-import-card header button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; }
+.external-import-modal { z-index: 90; display: grid; place-items: center; padding: 12px; background: rgba(0,0,0,.38); }
+.external-import-card { width: 260px; overflow-y: auto; padding: 14px; border-radius: 10px; box-shadow: 0 12px 36px rgba(0,0,0,.2); gap: 10px; font-size: 13px; }
+
+.external-import-card header button { display: grid; place-items: center; border-radius: 5px; color: inherit; }
 .external-import-card header button:hover { background: var(--bg-hover, rgba(128,128,128,.15)); }
 .external-import-card select, .external-import-card input { box-sizing: border-box; width: 100%; min-width: 0; font: inherit; color: inherit; }
 .external-import-card select { padding: 7px 3px; background: var(--panel); border: 1px solid var(--border); border-radius: 5px; font-size: 12px; }
@@ -2993,18 +2985,16 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 
 /* === [ANCHOR: CSS_APP_DIALOGS] 应用内异步弹窗，独立于业务模态 === */
 .app-dialog-overlay {
-  position: fixed; inset: 0; z-index: 2147483647;
+    z-index: 2147483647;
   width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border: 0;
-  display: flex; align-items: center; justify-content: center;
   padding: 12px; box-sizing: border-box; background: rgba(0, 0, 0, .42);
 }
 .app-dialog-overlay::backdrop { background: transparent; }
 .app-dialog-overlay[hidden], .app-dialog-card [hidden] { display: none !important; }
 .app-dialog-card {
-  box-sizing: border-box; width: 260px; max-width: calc(100vw - 24px);
+   width: 260px;
   max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px);
-  overflow: auto; padding: 16px; border: 1px solid var(--border);
-  border-radius: 12px; background: var(--panel); color: var(--text);
+  overflow: auto; padding: 16px;
   box-shadow: 0 12px 44px rgba(0, 0, 0, .22);
 }
 .app-dialog-card h2 { margin: 0 0 10px; font-size: 15px; }
@@ -3064,21 +3054,17 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 }
 /* ===== 设置弹窗：左右分栏大面板（左竖排选项卡 + 右内容区） ===== */
 .modal-card.settings-card {
-  display: flex;
-  flex-direction: column;
   width: 860px;
   max-width: 94vw;
   height: 640px;
   max-height: 88vh;
   padding: 0;
-  overflow: hidden;
 }
 
 /* 顶部标题区 */
 .settings-head {
   flex: 0 0 auto;
   padding: 18px 22px 14px;
-  border-bottom: 1px solid var(--border);
 }
 
 /* 主体：左侧导航 + 右侧内容 */
@@ -3901,6 +3887,40 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 .ui-switch > input:disabled { cursor: not-allowed; }
 .ui-switch > input:disabled + .ui-switch-track { opacity: 0.5; }
 
+/* === [ANCHOR: CSS_UI_MODAL] 通用弹窗视觉基类 === */
+/* 旧业务选择器作为兼容入口；仅收拢同值视觉声明，不接管显隐、层级与焦点。 */
+.ui-modal-overlay, .modal, .ms-modal, .local-tools-overlay, .external-import-modal, .app-dialog-overlay, .feature-help-overlay { position: fixed; inset: 0; }
+.ui-modal-overlay, .local-tools-overlay, .app-dialog-overlay, .feature-help-overlay { display: flex; }
+.ui-modal-overlay, .modal, .ms-modal, .local-tools-overlay, .app-dialog-overlay, .feature-help-overlay { align-items: center; justify-content: center; }
+.ui-modal-overlay, .modal, .ms-modal { background: rgba(0, 0, 0, 0.45); }
+.ui-modal-overlay { transition: background-color 0.16s ease, opacity 0.16s ease; }
+.ui-modal-card, .external-import-card, .feature-help-card, .ms-dialog { display: flex; flex-direction: column; }
+.modal-card:is(.settings-card, .plugin-hub-card, .preset-card, .module-edit-card, .preset-merged-card, .wb-detail-card, .session-char-card, .subchat-card, .wb-card, .wb-editor-card, .regex-card) { display: flex; flex-direction: column; overflow: hidden; }
+.ui-modal-card, .external-import-card, .app-dialog-card, .preset-import-dialog, .auto-retry-dialog, .image-gen-dialog, .pw-dialog { box-sizing: border-box; }
+.ui-modal-card, .external-import-card, .app-dialog-card, .feature-help-card, .preset-import-dialog, .di-modal, .auto-retry-dialog, .image-gen-dialog, .pw-dialog, .modal-card.plugin-hub-card { color: var(--text); max-width: calc(100vw - 24px); }
+.ui-modal-card, .modal-card, .external-import-card, .app-dialog-card, .feature-help-card, .ms-dialog, .auto-retry-dialog, .image-gen-dialog, .pw-dialog { background: var(--panel); }
+.ui-modal-card, .modal-card, .local-tools-card, .external-import-card, .app-dialog-card, .feature-help-card, .preset-import-dialog, .ms-dialog, .di-modal, .auto-retry-dialog, .image-gen-dialog, .pw-dialog { border: 1px solid var(--border); }
+.ui-modal-card, .app-dialog-card, .feature-help-card, .preset-import-dialog, .image-gen-dialog, .pw-dialog { border-radius: 12px; }
+.ui-modal-card, .modal-card, .ms-dialog, .image-gen-dialog, .pw-dialog { box-shadow: var(--shadow); }
+.ui-modal-card, .feature-help-card, .ms-dialog, .di-modal, .pw-dialog { overflow: hidden; }
+.ui-modal-card, .external-import-card, .feature-help-card, .pw-dialog, .modal-card.plugin-hub-card { max-height: calc(100dvh - 24px); }
+.ui-modal-header, .preset-head, .ms-head, .di-head, .plugin-hub-card header, .external-import-card header, .feature-help-card > header, .image-gen-dialog header { display: flex; align-items: center; }
+.ui-modal-header, .preset-head, .ms-head, .di-head, .plugin-hub-card header, .external-import-card header, .image-gen-dialog header { justify-content: space-between; }
+.ui-modal-header, .plugin-hub-card header, .external-import-card header { gap: 8px; }
+.ui-modal-header, .di-head, .feature-help-card > header { padding: 12px 16px; }
+.ui-modal-header, .preset-head, .ms-head, .di-head, .settings-head, .feature-help-card > header { border-bottom: 1px solid var(--border); }
+.ui-modal-close, .ms-close { display: inline-flex; align-items: center; justify-content: center; }
+.ui-modal-close, .plugin-hub-card header button, .external-import-card header button, .feature-help-card header button { width: 28px; height: 28px; border: 0; }
+.ui-modal-close, .preset-close, .ms-close, .plugin-hub-card header button, .external-import-card header button { padding: 0; }
+.ui-modal-close, .plugin-hub-card header button, .feature-help-card header button { border-radius: 6px; }
+.ui-modal-close, .preset-close, .plugin-hub-card header button, .external-import-card header button, .feature-help-card header button { background: transparent; }
+.ui-modal-close, .preset-close, .ms-close, .plugin-hub-card header button, .feature-help-card header button { color: var(--text-dim); }
+.ui-modal-close, .preset-close, .ms-close, .plugin-hub-card header button, .external-import-card header button, .feature-help-card header button { cursor: pointer; }
+.ui-modal-close:hover, .preset-close:hover { background: var(--bg); border-color: var(--border); }
+.ui-modal-close:hover, .preset-close:hover, .plugin-hub-card header button:hover { color: var(--text); }
+.ui-modal-header > :is(h2, h3) { margin: 0; font-weight: 700; }
+.ui-modal-close > svg { display: block; width: 16px; height: 16px; flex-shrink: 0; }
+
 /* === [ANCHOR: CSS_PROMPT_PRESETS] 系统提示词预设：顶部入口 + 预设弹窗 + 小模块列表 === */
 /* ===== 顶部预设入口按钮：单色 SVG 线条图标，随主题文字色自动变色 ===== */
 .btn-preset {
@@ -3928,10 +3948,9 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 /* ===== 预设双通道导入：选择器紧凑，编辑弹窗独立滚动 ===== */
 #tp-import-btn { display: inline-flex; align-items: center; gap: 4px; }
 .preset-import-dialog {
-  box-sizing: border-box; width: 580px; max-width: calc(100vw - 24px);
+   width: 580px;
   max-height: calc(100dvh - 32px); padding: 18px; overflow: auto;
-  border: 1px solid var(--border); border-radius: 12px;
-  color: var(--text); background: var(--panel, var(--bg));
+   background: var(--panel, var(--bg));
   box-shadow: 0 16px 56px #0004;
 }
 .preset-import-dialog::backdrop { background: #0006; }
@@ -3963,23 +3982,16 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 }
 
 .modal-card.preset-card {
-  display: flex;
-  flex-direction: column;
   width: 720px;
   max-width: 94vw;
   max-height: 86vh;
   padding: 0;
-  overflow: hidden;
 }
 
 .preset-head {
   flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 12px;
   padding: 16px 20px 13px;
-  border-bottom: 1px solid var(--border);
 }
 
 .preset-head .modal-title {
@@ -3991,22 +4003,14 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
   flex: 0 0 auto;
   width: 30px;
   height: 30px;
-  padding: 0;
   border: 1px solid transparent;
   border-radius: 8px;
-  background: transparent;
-  color: var(--text-dim);
   font-size: 21px;
   line-height: 1;
-  cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
-.preset-close:hover {
-  background: var(--bg);
-  border-color: var(--border);
-  color: var(--text);
-}
+
 
 /* 第一行：大预设选择 + 操作按键 */
 .preset-toolbar {
@@ -4217,13 +4221,10 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 }
 
 .modal-card.module-edit-card {
-  display: flex;
-  flex-direction: column;
   width: 560px;
   max-width: 92vw;
   max-height: 86vh;
   padding: 0;
-  overflow: hidden;
 }
 
 .module-edit-body {
@@ -4437,20 +4438,19 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 }
 .feature-help-btn:hover, .feature-help-btn:focus-visible { color: var(--accent); background: var(--cot-bg); }
 .feature-help-overlay {
-  position: fixed; inset: 0; z-index: 180; display: flex;
-  align-items: center; justify-content: center; padding: 12px;
+    z-index: 180; 
+    padding: 12px;
   background: #0007;
 }
 .feature-help-overlay[hidden] { display: none !important; }
 .feature-help-card {
-  width: 520px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px);
-  display: flex; flex-direction: column; overflow: hidden;
-  color: var(--text); background: var(--panel); border: 1px solid var(--border);
-  border-radius: 12px; box-shadow: 0 16px 48px #0004;
+  width: 520px;  
+    
+   box-shadow: 0 16px 48px #0004;
 }
-.feature-help-card > header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.feature-help-card > header { gap: 12px; }
 .feature-help-card h3 { flex: 1; margin: 0; font-size: 15px; }
-.feature-help-card header button { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: var(--text-dim); cursor: pointer; }
+.feature-help-card header button { display: grid; place-items: center; }
 .feature-help-content { overflow-y: auto; padding: 4px 18px 18px; font-size: 13px; line-height: 1.85; overflow-wrap: anywhere; }
 .feature-help-content h4 { margin: 18px 0 8px; color: var(--accent); font-size: 14px; }
 .feature-help-content p { margin: 8px 0 12px; }
@@ -4732,13 +4732,10 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 }
 
 .modal-card.preset-merged-card {
-  display: flex;
-  flex-direction: column;
   width: 640px;
   max-width: 94vw;
   max-height: 86vh;
   padding: 0;
-  overflow: hidden;
 }
 
 .preset-merged-meta {
@@ -4816,13 +4813,10 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 }
 
 .modal-card.wb-detail-card {
-  display: flex;
-  flex-direction: column;
   width: 620px;
   max-width: 94vw;
   max-height: 86vh;
   padding: 0;
-  overflow: hidden;
 }
 
 .wb-detail-sub {
@@ -4947,13 +4941,10 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 }
 
 .modal-card.session-char-card {
-  display: flex;
-  flex-direction: column;
   width: 560px;
   max-width: 94vw;
   max-height: 88vh;
   padding: 0;
-  overflow: hidden;
 }
 
 .session-char-card > .preset-head { flex-wrap: wrap; gap: 8px; }
@@ -5087,13 +5078,10 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 }
 
 .modal-card.subchat-card {
-  display: flex;
-  flex-direction: column;
   width: 600px;
   max-width: 94vw;
   max-height: 84vh;
   padding: 0;
-  overflow: hidden;
 }
 
 .subchat-head-text {
@@ -5374,7 +5362,7 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
     max-height: 100vh;
     border: none;
     border-radius: 0;
-  }
+}
 }
 
 /* === [ANCHOR: CSS_WORLDBOOK] 世界书管理弹窗（modules/worldbook.js 专用） === */
@@ -5383,13 +5371,10 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 }
 
 .modal-card.wb-card {
-  display: flex;
-  flex-direction: column;
   width: 720px;
   max-width: 95vw;
   max-height: 86vh;
   padding: 0;
-  overflow: hidden;
 }
 
 /* 顶部标题区：与预设弹窗保持一致的排版节奏 */
@@ -5799,13 +5784,10 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 }
 
 .modal-card.wb-editor-card {
-  display: flex;
-  flex-direction: column;
   width: 620px;
   max-width: 93vw;
   max-height: 88vh;
   padding: 0;
-  overflow: hidden;
 }
 
 .wb-editor-body {
@@ -5889,7 +5871,7 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
     width: 100%;
     max-width: 100%;
     max-height: 92vh;
-  }
+}
 
   .wb-toolbar,
   .wb-entry-toolbar {
@@ -5932,13 +5914,10 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 }
 
 .modal-card.regex-card {
-  display: flex;
-  flex-direction: column;
   width: 780px;
   max-width: 95vw;
   max-height: 86vh;
   padding: 0;
-  overflow: hidden;
 }
 
 /* 弹窗副标题小字：与世界书弹窗保持同一视觉规范 */
@@ -6197,7 +6176,7 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
     width: 100%;
     max-width: 100%;
     max-height: 92vh;
-  }
+}
 
   .regex-tabs,
   .regex-body,
@@ -6486,12 +6465,12 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 
   .modal-card {
     padding: 18px;
-  }
+}
 
   /* 手机端设置弹窗：占满屏幕，导航改为横向排列 */
   .modal {
     padding: 0;
-  }
+}
 
   .modal-card.settings-card {
     width: 100%;
@@ -6501,7 +6480,7 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
     max-height: min(100dvh, var(--visual-height, 100dvh));
     border: none;
     border-radius: 0;
-  }
+}
 
   .settings-head {
     padding: 14px 16px 10px;
@@ -6616,7 +6595,7 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
     max-height: min(100dvh, var(--visual-height, 100dvh));
     border: none;
     border-radius: 0;
-  }
+}
 
   /* 手机端头像行改为竖排，避免两列过窄 */
   .char-avatar-row {
@@ -6637,7 +6616,7 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 
   .preset-head {
     padding: 13px 14px 10px;
-  }
+}
 
   .preset-toolbar {
     flex-wrap: wrap;
@@ -6782,7 +6761,7 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 .auto-retry-group .is-on { color: #23a078; background: #23a07812; }
 .auto-retry-group .is-on span::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 5px; box-shadow: 0 0 6px #23a07866; }
 .auto-retry-status { font-size: 11px; color: var(--text-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.auto-retry-dialog { width: 360px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 32px); box-sizing: border-box; overflow: auto; padding: 16px; border: 1px solid var(--border); border-radius: 16px; background: var(--panel); color: var(--text); box-shadow: 0 16px 60px #0005; }
+.auto-retry-dialog { width: 360px; max-height: calc(100dvh - 32px); overflow: auto; padding: 16px; border-radius: 16px; box-shadow: 0 16px 60px #0005; }
 .auto-retry-dialog::backdrop { background: #0006; }
 .retry-dialog-head, .retry-field, .retry-rule-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
 .retry-dialog-head h3 { margin: 0; font-size: 15px; }
@@ -6908,14 +6887,9 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 }
 
 .ms-modal {
-  position: fixed;
-  inset: 0;
   z-index: 60;
   display: none;
-  align-items: center;
-  justify-content: center;
   padding: 16px;
-  background: rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(2px);
 }
 
@@ -6935,28 +6909,18 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 .context-preview-card pre { margin: 0; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; }
 .context-preview-note { border-color: var(--accent); background: var(--cot-bg); }
 .ms-dialog {
-  display: flex;
-  flex-direction: column;
   width: 780px;
   max-width: 94vw;
   max-height: 88vh;
-  border: 1px solid var(--border);
   border-radius: 16px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
-  overflow: hidden;
   animation: modal-in 0.16s ease-out;
 }
 
 /* 顶部标题栏 */
 .ms-head {
-  display: flex;
   flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
   gap: 10px;
   padding: 13px 16px;
-  border-bottom: 1px solid var(--border);
 }
 
 .ms-title {
@@ -6967,17 +6931,11 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 }
 
 .ms-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   width: 26px;
   height: 26px;
-  padding: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);
-  color: var(--text-dim);
-  cursor: pointer;
   transition: border-color 0.15s ease, color 0.15s ease;
 }
 
@@ -7343,7 +7301,7 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
   .ms-modal {
     padding: 0;
     align-items: stretch;
-  }
+}
 
   .ms-dialog {
     width: 100%;
@@ -7353,11 +7311,11 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
     border-radius: 0;
     border-left: none;
     border-right: none;
-  }
+}
 
   .ms-head {
     padding: 12px 14px;
-  }
+}
 
   .ms-body {
     padding: 12px 14px 20px;
@@ -7377,9 +7335,9 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 }
 
 /* === [ANCHOR: CSS_DEBUG_INSPECTOR] 全局抓包与报文透视 === */
-.di-modal{width:min(1200px,96vw);max-width:calc(100vw - 24px);height:min(850px,92dvh);max-height:92dvh;padding:0;border:1px solid var(--border);border-radius:14px;background:var(--panel,var(--bg));color:var(--text);overflow:hidden;box-shadow:0 24px 90px #0007}
+.di-modal{width:min(1200px,96vw);height:min(850px,92dvh);max-height:92dvh;padding:0;border-radius:14px;background:var(--panel,var(--bg));box-shadow:0 24px 90px #0007}
 .di-modal::backdrop{background:#0009;backdrop-filter:blur(3px)}
-.di-shell{height:100%;display:flex;flex-direction:column;min-width:0}.di-head{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border)}
+.di-shell{height:100%;display:flex;flex-direction:column;min-width:0}
 .di-modal button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:30px;padding:5px 9px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:7px;cursor:pointer;font:inherit;font-size:12px}.di-modal button:hover,.di-modal button[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
 .di-toolbar{display:flex;flex-wrap:wrap;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border)}.di-filters,.di-shortcuts,.di-tabs,.di-inline{display:flex;flex-wrap:wrap;gap:5px;align-items:center}.di-toolbar input{min-width:100px;flex:1;width:150px;padding:6px 9px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:7px}.di-modal .di-preview{color:var(--accent);border-color:var(--accent)}
 .di-columns{display:grid;grid-template-columns:280px minmax(0,1fr);flex:1;min-height:0}.di-list{overflow:auto;border-right:1px solid var(--border);padding:8px;min-width:0}.di-modal .di-trace{width:100%;display:flex;flex-direction:column;align-items:stretch;text-align:left;margin-bottom:6px;padding:10px;gap:6px;overflow-wrap:anywhere}.di-trace small{color:var(--text-dim);font-size:11px}.di-modal .di-trace.active{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 9%,var(--bg))}.di-trace[data-status=error]{border-left:3px solid #dc6262}.di-trace[data-status=success]{border-left:3px solid #51a987}.di-trace[data-status=dry_run]{border-left:3px solid #c9a54f}
@@ -7424,7 +7382,7 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
     box-sizing: border-box; width: 100%; max-width: 100vw;
     height: var(--app-vv-height, 100dvh); max-height: var(--app-vv-height, 100dvh);
     border-radius: 0; border: 0;
-  }
+}
   .di-modal { position: fixed; inset: var(--visual-top, 0px) 0 auto; margin: 0; }
   .settings-head, .ms-head, .wb-card > .preset-head,
   .regex-card > .preset-head, .wb-modal-card > header,
@@ -7449,9 +7407,9 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 .image-gen-capsule button + button { border-left: 1px solid var(--border); }
 .image-gen-capsule.active { color: var(--accent); border-color: var(--accent); background: var(--cot-bg); }
 .image-gen-capsule svg, .image-gen-tools svg { flex-shrink: 0; }
-.image-gen-dialog { box-sizing: border-box; width: 480px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 32px); padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: var(--text); box-shadow: var(--shadow); overflow: auto; }
+.image-gen-dialog { width: 480px; max-height: calc(100dvh - 32px); padding: 16px; overflow: auto; }
 .image-gen-dialog::backdrop { background: rgb(0 0 0 / 55%); }
-.image-gen-dialog header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.image-gen-dialog header { margin-bottom: 12px; }
 .image-gen-dialog h3 { font-size: 15px; margin: 0; }
 .image-gen-dialog button, .image-gen-ratios button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 6px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text-dim); cursor: pointer; }
 .image-gen-dialog button:hover, .image-gen-tools button:hover, .image-gen-ratios button:hover { color: var(--accent); background: var(--cot-bg); }
@@ -7505,7 +7463,7 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 @media (prefers-reduced-motion: reduce) { .image-gen-skeleton svg { animation: none; } }
 
 /* === [ANCHOR: CSS_PRESET_WORKBENCH] 双栏预设工作台与结构化对比 === */
-.pw-dialog { box-sizing: border-box; width: 1280px; height: min(860px, calc(100vh - 24px)); height: min(860px, calc(100dvh - 24px)); max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: var(--text); overflow: hidden; box-shadow: var(--shadow); }
+.pw-dialog { width: 1280px; height: min(860px, calc(100vh - 24px)); height: min(860px, calc(100dvh - 24px)); padding: 16px; }
 .pw-dialog[open] { display: flex; flex-direction: column; gap: 12px; }
 .pw-dialog::backdrop { background: rgb(0 0 0 / 55%); }
 .pw-dialog [hidden] { display: none !important; }
