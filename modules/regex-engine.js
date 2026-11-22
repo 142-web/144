@@ -930,13 +930,18 @@
       row.className = 'regex-rule' + (rule.enabled === false ? ' off' : '');
       row.setAttribute('data-id', rule.id || '');
 
-      var toggle = document.createElement('button');
-      toggle.type = 'button';
-      toggle.className = 'regex-switch' + (rule.enabled === false ? '' : ' on');
-      toggle.setAttribute('data-act', 'toggle');
-      toggle.setAttribute('aria-pressed', rule.enabled === false ? 'false' : 'true');
+      var toggle = document.createElement('label');
+      toggle.className = 'ui-switch ui-switch-sm';
       toggle.title = rule.enabled === false ? '点击启用' : '点击停用';
-      toggle.innerHTML = '<span class="regex-switch-dot"></span>';
+      var checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = rule.enabled !== false;
+      checkbox.setAttribute('data-act', 'toggle');
+      checkbox.setAttribute('role', 'switch');
+      checkbox.setAttribute('aria-label', '启用 / 停用该规则');
+      var track = document.createElement('span');
+      track.className = 'ui-switch-track';
+      toggle.append(checkbox, track);
       row.appendChild(toggle);
 
       var main = document.createElement('div');

@@ -264,14 +264,17 @@
       description.textContent = plugin.summary || plugin.description;
       description.title = plugin.description;
       text.append(name, description);
+      var switchLabel = document.createElement('label'); switchLabel.className = 'ui-switch';
       var toggle = document.createElement('input');
-      toggle.type = 'checkbox'; toggle.className = 'plugin-hub-toggle';
+      toggle.type = 'checkbox';
       toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-label', plugin.name);
       toggle.title = '启用 / 关闭' + plugin.name; toggle.checked = config[plugin.id] === true;
       toggle.addEventListener('change', function () {
         if (!setEnabled(plugin.id, toggle.checked)) toggle.checked = config[plugin.id] === true;
       });
-      card.append(icon, text, toggle); list.appendChild(card);
+      var track = document.createElement('span'); track.className = 'ui-switch-track';
+      switchLabel.append(toggle, track);
+      card.append(icon, text, switchLabel); list.appendChild(card);
     });
     if (!list.childElementCount) {
       var empty = document.createElement('p'); empty.className = 'plugin-hub-empty';

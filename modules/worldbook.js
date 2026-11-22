@@ -577,9 +577,9 @@
         '</div>' +
         '<button type="button" class="wb-icon-btn" data-act="edit" title="编辑词条">' + ICON_EDIT + '</button>' +
         '<button type="button" class="wb-icon-btn wb-icon-danger" data-act="del" title="删除词条">×</button>' +
-        '<button type="button" class="wb-switch' + (entry.enabled ? ' on' : '') +
-        '" data-act="toggle" aria-pressed="' + (entry.enabled ? 'true' : 'false') +
-        '" title="启用 / 停用该词条"><span class="wb-switch-knob"></span></button>';
+        '<label class="ui-switch ui-switch-sm" title="启用 / 停用该词条">' +
+        '<input type="checkbox" data-act="toggle" role="switch" aria-label="启用 / 停用该词条"' +
+        (entry.enabled ? ' checked' : '') + '><span class="ui-switch-track"></span></label>';
 
       els.entryList.appendChild(row);
     });

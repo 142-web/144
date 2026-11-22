@@ -509,7 +509,7 @@
   async function batchModules(side, action) {
     var presetId = sides[side].presetId, ids = selectedIds(side).slice();
     if (!ids.length) return;
-    if (action === 'delete' && !await window.confirm('删除所选模块？')) return;
+    if (action === 'delete' && !await window.showAppConfirm('删除所选模块？')) return;
     var list = presets(), p = list.find(function (item) { return item.id === presetId; });
     if (!p) return notify('预设已失效');
     if (action === 'delete') p.modules = p.modules.filter(function (m) { return ids.indexOf(m.id) < 0; });
@@ -519,7 +519,7 @@
   async function deletePreset(side) {
     var id = sides[side].presetId;
     if (presets().length <= 1) return notify('至少保留一个预设');
-    if (!await window.confirm('删除当前预设？')) return;
+    if (!await window.showAppConfirm('删除当前预设？')) return;
     var list = presets();
     if (list.length <= 1) return notify('至少保留一个预设');
     if (!list.some(function (p) { return p.id === id; })) return notify('预设已失效');

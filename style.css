@@ -2975,11 +2975,7 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 .plugin-hub-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .plugin-hub-copy strong { font-size: 13px; font-weight: 600; }
 .plugin-hub-copy p { margin: 4px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-dim); }
-.plugin-hub-toggle { appearance: none; -webkit-appearance: none; flex: 0 0 30px; width: 30px; height: 18px; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--text-dim); cursor: pointer; position: relative; transition: background .15s; }
-.plugin-hub-toggle::before { content: ''; position: absolute; width: 12px; height: 12px; left: 2px; top: 2px; background: #fff; border-radius: 50%; transition: transform .15s; }
-.plugin-hub-toggle:checked { background: var(--accent); border-color: var(--accent); }
-.plugin-hub-toggle:checked::before { transform: translateX(12px); }
-.plugin-hub-toggle:focus-visible, .plugin-hub-card header button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.plugin-hub-card header button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .plugin-hub-empty, .plugin-hub-status { margin: 0; color: var(--text-dim); font-size: 12px; line-height: 1.5; }
 .plugin-hub-status:empty { display: none; }
 
@@ -3829,6 +3825,80 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
   background: var(--accent-hover);
 }
 
+/* === [ANCHOR: CSS_UI_SWITCH] 通用滑块开关：标准与紧凑尺寸 === */
+.ui-switch {
+  --ui-switch-width: 42px;
+  --ui-switch-height: 24px;
+  --ui-switch-knob: 18px;
+  --ui-switch-inset: 3px;
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-block;
+  width: var(--ui-switch-width);
+  height: var(--ui-switch-height);
+  margin: 0;
+  padding: 0;
+  vertical-align: middle;
+  cursor: pointer;
+}
+
+.ui-switch.ui-switch-sm {
+  --ui-switch-width: 34px;
+  --ui-switch-height: 19px;
+  --ui-switch-knob: 13px;
+}
+
+/* 复选框覆盖完整热区，沿用原有 click / change 链路且不产生双次启停。 */
+.ui-switch > input[type="checkbox"] {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+.ui-switch-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--border);
+  pointer-events: none;
+  transition: background 0.18s ease;
+}
+
+.ui-switch-track::before {
+  content: "";
+  position: absolute;
+  left: var(--ui-switch-inset);
+  top: var(--ui-switch-inset);
+  width: var(--ui-switch-knob);
+  height: var(--ui-switch-knob);
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.22);
+  transition: transform 0.18s ease;
+}
+
+.ui-switch > input:checked + .ui-switch-track {
+  background: var(--accent);
+}
+
+.ui-switch > input:checked + .ui-switch-track::before {
+  transform: translateX(calc(var(--ui-switch-width) - var(--ui-switch-knob) - 2 * var(--ui-switch-inset)));
+}
+
+.ui-switch > input:focus-visible + .ui-switch-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.ui-switch > input:disabled { cursor: not-allowed; }
+.ui-switch > input:disabled + .ui-switch-track { opacity: 0.5; }
+
 /* === [ANCHOR: CSS_PROMPT_PRESETS] 系统提示词预设：顶部入口 + 预设弹窗 + 小模块列表 === */
 /* ===== 顶部预设入口按钮：单色 SVG 线条图标，随主题文字色自动变色 ===== */
 .btn-preset {
@@ -4137,56 +4207,6 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
   font-size: 12.5px;
   font-weight: 400;
   line-height: 1.6;
-}
-
-/* ===== 纯 CSS 圆角胶囊滑块开关 ===== */
-.switch {
-  position: relative;
-  flex: 0 0 auto;
-  display: inline-block;
-  width: 42px;
-  height: 24px;
-}
-
-.switch input {
-  position: absolute;
-  width: 0;
-  height: 0;
-  opacity: 0;
-}
-
-.switch .slider {
-  position: absolute;
-  inset: 0;
-  border-radius: 999px;
-  background: var(--border);
-  cursor: pointer;
-  transition: background 0.18s ease;
-}
-
-.switch .slider::before {
-  content: "";
-  position: absolute;
-  left: 3px;
-  top: 3px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.22);
-  transition: transform 0.18s ease;
-}
-
-.switch input:checked + .slider {
-  background: var(--accent);
-}
-
-.switch input:checked + .slider::before {
-  transform: translateX(18px);
-}
-
-.switch input:focus-visible + .slider {
-  box-shadow: 0 0 0 2px var(--cot-border);
 }
 
 /* ===== 小模块独立编辑窗口 ===== */
@@ -5759,42 +5779,6 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
   background: rgba(217, 48, 37, 0.08);
 }
 
-/* 启用 / 停用 圆角滑块开关（纯 CSS） */
-.wb-switch {
-  flex: 0 0 auto;
-  position: relative;
-  width: 34px;
-  height: 19px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg);
-  cursor: pointer;
-  transition: background 0.16s ease, border-color 0.16s ease;
-}
-
-.wb-switch.on {
-  border-color: var(--accent);
-  background: var(--accent);
-}
-
-.wb-switch-knob {
-  position: absolute;
-  top: 50%;
-  left: 2px;
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  background: var(--panel);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.28);
-  transform: translateY(-50%);
-  transition: left 0.16s ease;
-}
-
-.wb-switch.on .wb-switch-knob {
-  left: 17px;
-}
-
 .wb-entry-empty {
   flex: 0 0 auto;
   padding: 0 20px 20px;
@@ -6043,42 +6027,6 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 /* 停用的规则整体降透明度，但仍保持可操作 */
 .regex-rule.off {
   opacity: 0.55;
-}
-
-/* 圆角滑块开关（与 .wb-switch 同规格，避免跨模块样式耦合） */
-.regex-switch {
-  flex: 0 0 auto;
-  position: relative;
-  width: 34px;
-  height: 19px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg);
-  cursor: pointer;
-  transition: background 0.16s ease, border-color 0.16s ease;
-}
-
-.regex-switch.on {
-  border-color: var(--accent);
-  background: var(--accent);
-}
-
-.regex-switch-dot {
-  position: absolute;
-  top: 50%;
-  left: 2px;
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  background: var(--panel);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.28);
-  transform: translateY(-50%);
-  transition: left 0.16s ease;
-}
-
-.regex-switch.on .regex-switch-dot {
-  left: 17px;
 }
 
 .regex-rule-main {
@@ -7488,7 +7436,7 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
   }
   .bubble.editing { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
   .msg-actions .msg-action-btn, .msg-edit-btn, .msg-corner-tool-btn,
-  .msg-corner-item, .msg-swipe-btn, .regex-switch, .regex-act-btn {
+  .msg-corner-item, .msg-swipe-btn, .regex-act-btn {
     min-width: 32px; min-height: 32px;
   }
 }

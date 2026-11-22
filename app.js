@@ -8497,7 +8497,7 @@
 
     // 3. 右侧纯 CSS 胶囊滑块开关
     var switchLabel = document.createElement('label');
-    switchLabel.className = 'switch';
+    switchLabel.className = 'ui-switch';
     switchLabel.title = mod.enabled === true ? '点击关闭该模块' : '点击开启该模块';
 
     var checkbox = document.createElement('input');
@@ -8510,7 +8510,7 @@
     });
 
     var slider = document.createElement('span');
-    slider.className = 'slider';
+    slider.className = 'ui-switch-track';
 
     switchLabel.appendChild(checkbox);
     switchLabel.appendChild(slider);
@@ -8557,7 +8557,7 @@
    */
   function armModuleDrag(row, e) {
     var target = e.target;
-    var excluded = target.closest('input, textarea, select, label, .switch, .module-row-actions, .module-icon-btn, [contenteditable="true"], .module-content, .module-preview, .wb-editor');
+    var excluded = target.closest('input, textarea, select, label, .ui-switch, .module-row-actions, .module-icon-btn, [contenteditable="true"], .module-content, .module-preview, .wb-editor');
     var header = !excluded && (target === row || target.closest('.drag-handle, .module-name-trigger, .module-name'));
     var selection = window.getSelection(), anchor = selection && selection.anchorNode;
     var anchorEl = anchor && (anchor.nodeType === 1 ? anchor : anchor.parentElement);
@@ -9336,7 +9336,7 @@
 
     // 4. 纯 CSS 胶囊开关：切换即时保存
     var switchLabel = document.createElement('label');
-    switchLabel.className = 'switch';
+    switchLabel.className = 'ui-switch';
     switchLabel.title = mod.enabled === true ? '点击关闭该模块' : '点击开启该模块';
 
     var checkbox = document.createElement('input');
@@ -9349,7 +9349,7 @@
     });
 
     var slider = document.createElement('span');
-    slider.className = 'slider';
+    slider.className = 'ui-switch-track';
 
     switchLabel.appendChild(checkbox);
     switchLabel.appendChild(slider);
@@ -12608,7 +12608,7 @@
         await prompt.prompt(); await prompt.userChoice;
       } else {
         // 单步安装指引，不在常驻界面堆砌说明。
-        await window.alert('点击浏览器菜单 → 添加到主屏幕，从桌面图标打开即可永久隐藏上下地址栏');
+        await window.showAppAlert('点击浏览器菜单 → 添加到主屏幕，从桌面图标打开即可永久隐藏上下地址栏');
       }
     }
     button.addEventListener('click', async function () {
