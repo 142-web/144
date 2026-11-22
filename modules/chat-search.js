@@ -224,20 +224,34 @@
     }
   }
 
-  function selectSearchResult(index) {
+  function selectSearchResult(index, keepDropdownOpen) {
     var item = currentResults[index];
     if (!item) return;
     currentIndex = index;
     updateSearchNav();
     jumpToSearchResult(item.sessionId, item.floor);
-    closeSearchDropdown();
+    if (!keepDropdownOpen) {
+      closeSearchDropdown();
+    } else if (els.chatSearchDropdown && !els.chatSearchDropdown.hidden) {
+      // 只调整结果容器，避免连带滚动主聊天区。
+      var list = els.chatSearchDropdown;
+      var active = list.querySelector('.search-result-item.is-active');
+      if (active) {
+        var listTop = list.getBoundingClientRect().top + list.clientTop;
+        var activeRect = active.getBoundingClientRect();
+        if (activeRect.top < listTop) list.scrollTop += activeRect.top - listTop;
+        else if (activeRect.bottom > listTop + list.clientHeight) {
+          list.scrollTop += Math.min(activeRect.bottom - listTop - list.clientHeight, activeRect.top - listTop);
+        }
+      }
+    }
   }
 
   function stepSearchResult(delta) {
     var total = currentResults.length;
     if (!total) return;
     var index = currentIndex < 0 ? (delta < 0 ? total - 1 : 0) : (currentIndex + delta + total) % total;
-    selectSearchResult(index);
+    selectSearchResult(index, true);
   }
 
   /**
@@ -423,7 +437,18 @@
       var targetTop = node.getBoundingClientRect().top - area.getBoundingClientRect().top - area.clientTop + area.scrollTop;
       var desired = Math.max(0, targetTop - (area.clientHeight - node.offsetHeight) / 2);
       desired = Math.min(desired, Math.max(0, area.scrollHeight - area.clientHeight));
+      var beforeScrollTop = area.scrollTop;
       if (Math.abs(area.scrollTop - desired) > 3) area.scrollTop = desired;
+      console.log('[SearchDebug]', {
+        targetFloor: targetFloor,
+        nodeFloor: node.dataset && node.dataset.floor,
+        nodeHeight: node.offsetHeight,
+        areaClientHeight: area.clientHeight,
+        areaScrollHeight: area.scrollHeight,
+        beforeScrollTop: beforeScrollTop,
+        desired: desired,
+        afterScrollTop: area.scrollTop
+      });
     }
     cancelPositionCheck = cleanup;
     events.forEach(function (type) { area.addEventListener(type, cleanup, { capture: true, passive: true }); });
@@ -431,6 +456,13 @@
     flashSearchKeyword(node);
     frame = window.requestAnimationFrame(function () { frame = null; centerTarget(); });
     timer = window.setTimeout(function () { timer = null; centerTarget(); cleanup(); }, 120);
+    window.setTimeout(function () {
+      console.log('[SearchDebug:300ms]', {
+        finalScrollTop: area.scrollTop,
+        nodeRectTop: Math.round(node.getBoundingClientRect().top),
+        areaRectTop: Math.round(area.getBoundingClientRect().top)
+      });
+    }, 300);
   }
 
   /**
@@ -524,7 +556,7 @@
         if (!item) return;
         var index = Number(item.getAttribute('data-result-index'));
         if (!Number.isInteger(index)) return;
-        selectSearchResult(index);
+        selectSearchResult(index, false);
       });
     }
 
