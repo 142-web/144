@@ -36,7 +36,7 @@
     if (a.kind === 'text') return '';
     var id = t && t.model.id || '未选择';
     if (a.kind === 'image') {
-      if (t && (t.provider.visionSupport === true || /gpt-4o|gpt-4-turbo|gpt-4\.[15]|(?:^|[/_-])o[134](?:[-_]|$)|claude-(?:3|4)|claude-(?:sonnet|opus|haiku)-4|gemini|vl|vision|qvq|glm-4v|pixtral|grok-(?:2-vision|3|4)|minicpm-v|internvl|step-1v/i.test(id))) return '';
+      if (t && t.model && t.model.visionSupport === true) return '';
       return '当前模型「' + id + '」不支持直接识别图片，请切换支持视觉的模型或移除该图片';
     }
     if (a.kind === 'pdf' && /gemini|claude-(?:3[.-][57]|[4-9])|claude-(?:sonnet|opus|haiku)-[4-9]/i.test(id)) return '';

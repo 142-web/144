@@ -28,6 +28,7 @@
   var S3_CONFIG_FIELDS = ['s3Endpoint', 's3Bucket', 's3AccessKey', 's3SecretKey'];
   var PROVIDERS_KEY = 'mychat_providers';    // 多渠道数组（新版）
   var ACTIVE_TARGET_KEY = 'mychat_active_target'; // 当前选中的 { providerId, modelId }
+  var VISION_AUTO_PROBED_KEY = 'mychat_vision_auto_probed_v1'; // 本机一次性视觉实测标记，不同步或备份
   var SESSIONS_KEY = 'mychat_sessions';      // 全部会话（数组）
   var CURRENT_ID_KEY = 'mychat_current_id';  // 当前选中会话的 id
   var LAST_MODIFIED_KEY = 'mychat_last_modified'; // 全局最后修改时间戳（毫秒）
@@ -6133,7 +6134,7 @@
      -------------------------------------------------------------------
      存储结构：
        mychat_providers     = [{ id, name, baseUrl, apiKey,
-                                models: [{id, alias, inputPrice, cachePrice, outputPrice}] }]
+                                models: [{id, alias, inputPrice, cachePrice, outputPrice, visionSupport}] }]
        mychat_active_target = { providerId, modelId }
      单价单位：元 / 百万 Tokens，留空字符串表示不计费
      =================================================================== */
@@ -6225,7 +6226,8 @@
           alias: alias,
           inputPrice: inputPrice,
           cachePrice: cachePrice,
-          outputPrice: outputPrice
+          outputPrice: outputPrice,
+          visionSupport: item && typeof item.visionSupport === 'boolean' ? item.visionSupport : Boolean(raw.visionSupport)
         });
       });
     }
@@ -6240,7 +6242,6 @@
           : DEFAULTS.baseUrl,
       builtinId: typeof raw.builtinId === 'string' ? raw.builtinId : '',
       apiType: ['anthropic', 'gemini'].indexOf(raw.apiType) >= 0 ? raw.apiType : 'openai',
-      visionSupport: raw.visionSupport === true,
       apiKey: typeof raw.apiKey === 'string' ? raw.apiKey.trim() : '',
       models: models
     };
@@ -6275,7 +6276,7 @@
         name: '默认渠道',
         baseUrl: config.baseUrl || DEFAULTS.baseUrl,
         apiKey: config.apiKey || '',
-        models: [{ id: legacyModel, alias: '' }]
+        models: [{ id: legacyModel, alias: '', visionSupport: false }]
       });
       persistProviders(true);
       console.log('[渠道迁移] 已将旧版单 API 配置迁移为「默认渠道」');
@@ -6957,8 +6958,6 @@
     }
     var protocol = document.getElementById('cfg-api-type');
     if (protocol) provider.apiType = protocol.value;
-    var vision = document.getElementById('cfg-vision-support');
-    if (vision) provider.visionSupport = vision.checked;
     if (els.cfgBaseUrl) {
       provider.baseUrl = els.cfgBaseUrl.value.trim() || DEFAULTS.baseUrl;
     }
@@ -6978,8 +6977,6 @@
     if (els.cfgApiKey) els.cfgApiKey.value = provider ? provider.apiKey : '';
     var protocol = document.getElementById('cfg-api-type');
     if (protocol) protocol.value = provider ? provider.apiType : 'openai';
-    var vision = document.getElementById('cfg-vision-support');
-    if (vision) vision.checked = !!(provider && provider.visionSupport);
 
     renderModelList();
     resetConnResult();
@@ -7100,6 +7097,36 @@
         persistModelFieldRealtime(providerId, model.id, 'alias', value);
       });
 
+      var visionControls = document.createElement('div');
+      visionControls.className = 'model-vision-controls';
+      var visionLabel = document.createElement('label');
+      var visionCheckbox = document.createElement('input');
+      visionCheckbox.type = 'checkbox';
+      visionCheckbox.className = 'model-vision-checkbox';
+      visionCheckbox.checked = model.visionSupport === true;
+      visionCheckbox.onchange = function () {
+        modelVisionRevisions.set(model, (modelVisionRevisions.get(model) || 0) + 1);
+        persistModelFieldRealtime(providerId, model.id, 'visionSupport', visionCheckbox.checked);
+      };
+      visionLabel.appendChild(visionCheckbox);
+      visionLabel.appendChild(document.createTextNode('识图'));
+      var visionProbe = document.createElement('button');
+      visionProbe.type = 'button';
+      visionProbe.className = 'model-vision-probe-btn';
+      visionProbe.title = '实测此模型是否支持识图';
+      visionProbe.setAttribute('aria-label', visionProbe.title);
+      visionProbe.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>';
+      visionProbe.onclick = function () {
+        syncEditingProviderFields();
+        void probeDraftModelVision(provider, model);
+      };
+      visionControls.appendChild(visionLabel);
+      visionControls.appendChild(visionProbe);
+      row._visionModel = model;
+      row._visionCheckbox = visionCheckbox;
+      row._visionProbe = visionProbe;
+      syncModelVisionRow(row);
+
       var removeBtn = document.createElement('button');
       removeBtn.type = 'button';
       removeBtn.className = 'model-item-remove';
@@ -7109,6 +7136,7 @@
 
       main.appendChild(idText);
       main.appendChild(aliasInput);
+      main.appendChild(visionControls);
       main.appendChild(removeBtn);
 
       // 第二行：三档单价（元 / 百万 Tokens）
@@ -7130,6 +7158,142 @@
         priceList.appendChild(priceRow);
       }
     });
+  }
+
+  // 探测状态仅驻留内存；手工改选优先于已经发出的旧探测。
+  var modelVisionProbes = new WeakSet();
+  var modelVisionRevisions = new WeakMap();
+
+  function syncModelVisionRow(row) {
+    row._visionCheckbox.checked = row._visionModel.visionSupport === true;
+    var probing = modelVisionProbes.has(row._visionModel);
+    row._visionProbe.disabled = probing;
+    row._visionProbe.classList.toggle('is-probing', probing);
+    row._visionProbe.setAttribute('aria-busy', String(probing));
+  }
+
+  function refreshModelVisionRows() {
+    if (!els.modelList) return;
+    Array.prototype.forEach.call(els.modelList.children, function (row) {
+      if (row._visionModel) syncModelVisionRow(row);
+    });
+  }
+
+  // 复用主请求的协议适配及鉴权；HTTP 拒收和网络失败严格区分。
+  async function probeModelVision(provider, model) {
+    if (!provider || !provider.baseUrl || !model || !model.id) return { ok: false };
+    var controller = new AbortController();
+    var timer;
+    try {
+      var timeout = new Promise(function (resolve) {
+        timer = setTimeout(function () {
+          controller.abort();
+          resolve({ ok: false });
+        }, 12000);
+      });
+      var request = (window.MyChatProviders && typeof window.MyChatProviders.fetch === 'function'
+        ? window.MyChatProviders.fetch.bind(null, provider) : fetch)(buildChatUrl(provider.baseUrl), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + provider.apiKey,
+          'Accept': 'application/json'
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: model.id,
+          max_tokens: 1,
+          stream: false,
+          messages: [{ role: 'user', content: [
+            { type: 'text', text: 'hi' },
+            { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' } }
+          ] }]
+        })
+      });
+      return await Promise.race([
+        Promise.resolve(request).then(function (res) { return { ok: true, supported: res.ok }; }),
+        timeout
+      ]);
+    } catch (err) {
+      return { ok: false };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function probeDraftModelVision(provider, model) {
+    if (modelVisionProbes.has(model)) return;
+    var owner = draftProviders;
+    var revision = (modelVisionRevisions.get(model) || 0) + 1;
+    modelVisionRevisions.set(model, revision);
+    var connection = [provider.baseUrl, provider.apiKey, provider.apiType].join('\n');
+    modelVisionProbes.add(model);
+    refreshModelVisionRows();
+    try {
+      var result = await probeModelVision(Object.assign({}, provider), model);
+      // 取消、删除、重新打开或改换连接后，不让旧请求回写新草稿。
+      if (!owner || owner !== draftProviders || getProviderById(provider.id, owner) !== provider ||
+          findProviderModel(provider, model.id) !== model ||
+          connection !== [provider.baseUrl, provider.apiKey, provider.apiType].join('\n') ||
+          revision !== (modelVisionRevisions.get(model) || 0)) return;
+      if (result.ok) {
+        model.visionSupport = result.supported;
+        showToast(result.supported ? '支持识图' : '不支持识图');
+      } else {
+        showToast('探测超时或网络错误');
+      }
+    } finally {
+      modelVisionProbes.delete(model);
+      refreshModelVisionRows();
+    }
+  }
+
+  async function autoProbeAllModelVision() {
+    try {
+      if (localStorage.getItem(VISION_AUTO_PROBED_KEY) === '1') return;
+      var queue = [];
+      providers.forEach(function (provider) {
+        if (!provider.baseUrl.trim() || !provider.apiKey.trim()) return;
+        provider.models.forEach(function (model) {
+          queue.push({ provider: provider, model: model, connection: Object.assign({}, provider) });
+        });
+      });
+      var index = 0;
+      var completed = [];
+      async function worker() {
+        while (index < queue.length) {
+          var task = queue[index++];
+          var result = await probeModelVision(task.connection, task.model);
+          var current = getProviderById(task.provider.id);
+          if (result.ok && current === task.provider && findProviderModel(current, task.model.id) === task.model &&
+              current.baseUrl === task.connection.baseUrl && current.apiKey === task.connection.apiKey &&
+              current.apiType === task.connection.apiType) {
+            task.model.visionSupport = result.supported;
+            completed.push(task);
+          }
+          // 每个工人完成后等待，始终最多两路在途请求。
+          await new Promise(function (resolve) { setTimeout(resolve, 200); });
+        }
+      }
+      await Promise.all([worker(), worker()]);
+      if (!persistProviders(true)) return;
+      localStorage.setItem(VISION_AUTO_PROBED_KEY, '1');
+      if (draftProviders && els.modal && els.modal.classList.contains('show')) {
+        completed.forEach(function (task) {
+          var draftProvider = getProviderById(task.provider.id, draftProviders);
+          var draftModel = findProviderModel(draftProvider, task.model.id);
+          if (draftModel && !modelVisionRevisions.has(draftModel) && !modelVisionProbes.has(draftModel) &&
+              draftProvider.baseUrl === task.connection.baseUrl && draftProvider.apiKey === task.connection.apiKey &&
+              draftProvider.apiType === task.connection.apiType) {
+            draftModel.visionSupport = task.model.visionSupport;
+          }
+        });
+        refreshModelVisionRows();
+      }
+      window.dispatchEvent(new Event('mychat-context-changed'));
+    } catch (err) {
+      console.warn('后台视觉实测未完成：', err);
+    }
   }
 
   /**
@@ -7325,11 +7489,14 @@
       alias: '',
       inputPrice: '',
       cachePrice: '',
-      outputPrice: ''
+      outputPrice: '',
+      visionSupport: false
     });
     els.newModelId.value = '';
 
     renderModelList();
+    syncEditingProviderFields();
+    void probeDraftModelVision(provider, findProviderModel(provider, modelId));
     // 拉取面板中该模型的按钮需同步置灰
     if (!els.fetchPanel.hidden) renderFetchedList();
   }
@@ -13050,10 +13217,13 @@
           alias: '',
           inputPrice: '',
           cachePrice: '',
-          outputPrice: ''
+          outputPrice: '',
+          visionSupport: false
         });
         renderModelList();
         renderFetchedList();
+        syncEditingProviderFields();
+        void probeDraftModelVision(provider, findProviderModel(provider, modelId));
       });
     }
 
@@ -13522,6 +13692,7 @@
   });
   window.MyChatStorageReady = preloadLargeStorage().then(async function () {
     await init();
+    setTimeout(autoProbeAllModelVision, 3000);
   }).catch(function (error) {
     console.error('历史数据加载失败：', error);
     window.alert(error.message || '历史数据加载失败');

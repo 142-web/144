@@ -3521,6 +3521,49 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
   text-overflow: ellipsis;
 }
 
+/* 模型级识图控件：固定紧凑热区，不挤高模型行。 */
+.model-vision-controls {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 3px;
+}
+.model-vision-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.model-item .model-vision-checkbox {
+  width: 13px;
+  height: 13px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.model-vision-probe-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.model-vision-probe-btn:hover,
+.model-vision-probe-btn:focus-visible { color: var(--accent); background: var(--panel); }
+.model-vision-probe-btn.is-probing { color: var(--accent); cursor: wait; }
+.model-vision-probe-btn.is-probing svg { animation: model-vision-spin 1s linear infinite; }
+@keyframes model-vision-spin { to { transform: rotate(360deg); } }
 /* 提高选择器权重，避免被 .field input 的通用样式覆盖 */
 .model-item .model-item-alias {
   flex: 0 1 110px;
@@ -3539,6 +3582,11 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 .model-item .model-item-alias:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(47, 111, 235, 0.16);
+}
+
+@media (max-width: 480px) {
+  .model-item-main { gap: 4px; }
+  .model-item .model-item-alias { flex-basis: 65px; min-width: 0; width: 65px; padding-inline: 4px; }
 }
 
 /* 单价输入行：三档并排，窄屏自动换行 */
