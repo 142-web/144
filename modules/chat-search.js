@@ -3,6 +3,10 @@
   'use strict';
 
   var searchScope = 'current';
+  var currentResults = [];
+  var currentIndex = -1;
+  var resultKey = null;
+  var cancelPositionCheck = null;
   var els;
   var getSessions, getCurrentSession, getCurrentId, getDefaultTitle, getPresetById, isDraggingToolbar, escapeHtml, cancelToolbarHolds, closeSidebar, ensureMessageRendered, openTopPresetDropdown, switchSession, renderMessages;
 
@@ -189,6 +193,11 @@
   }
 
   function closeSearch(restoreFocus) {
+    if (cancelPositionCheck) cancelPositionCheck();
+    currentResults = [];
+    currentIndex = -1;
+    resultKey = null;
+    updateSearchNav();
     closeSearchDropdown();
     if (els.headerSearchWrap) els.headerSearchWrap.classList.remove('search-expanded');
     if (els.chatSearchInput) els.chatSearchInput.value = '';
@@ -200,20 +209,59 @@
     }
   }
 
+  function updateSearchNav() {
+    var total = currentResults.length;
+    if (els.chatSearchNav) els.chatSearchNav.hidden = !total;
+    if (els.chatSearchCount) els.chatSearchCount.textContent = (currentIndex + 1) + '/' + total;
+    if (els.chatSearchPrev) els.chatSearchPrev.disabled = !total;
+    if (els.chatSearchNext) els.chatSearchNext.disabled = !total;
+    if (els.chatSearchDropdown) {
+      Array.prototype.forEach.call(els.chatSearchDropdown.querySelectorAll('.search-result-item'), function (item) {
+        var active = Number(item.getAttribute('data-result-index')) === currentIndex;
+        item.classList.toggle('is-active', active);
+        item.setAttribute('aria-current', active ? 'true' : 'false');
+      });
+    }
+  }
+
+  function selectSearchResult(index) {
+    var item = currentResults[index];
+    if (!item) return;
+    currentIndex = index;
+    updateSearchNav();
+    jumpToSearchResult(item.sessionId, item.floor);
+    closeSearchDropdown();
+  }
+
+  function stepSearchResult(delta) {
+    var total = currentResults.length;
+    if (!total) return;
+    var index = currentIndex < 0 ? (delta < 0 ? total - 1 : 0) : (currentIndex + delta + total) % total;
+    selectSearchResult(index);
+  }
+
   /**
-   * 渲染搜索结果浮层
+   * 重检才重置游标；聚焦或重新展开仅重绘已有结果。
    */
-  function renderSearchDropdown() {
+  function renderSearchDropdown(forceSearch) {
     if (!els.chatSearchDropdown || !els.chatSearchInput) return;
 
     var keyword = els.chatSearchInput.value.trim();
     if (els.chatSearchClear) els.chatSearchClear.hidden = !keyword;
+    var key = JSON.stringify([keyword, searchScope, searchScope === 'current' ? getCurrentId() : null]);
+    if (forceSearch === true || resultKey !== key) {
+      if (cancelPositionCheck) cancelPositionCheck();
+      currentResults = collectSearchResults(keyword, searchScope);
+      currentIndex = -1;
+      resultKey = key;
+    }
+    updateSearchNav();
     if (!keyword) {
       closeSearchDropdown();
       return;
     }
 
-    var results = collectSearchResults(keyword, searchScope);
+    var results = currentResults;
     var box = els.chatSearchDropdown;
     box.innerHTML = '';
 
@@ -226,10 +274,12 @@
       return;
     }
 
-    results.forEach(function (item) {
+    results.forEach(function (item, index) {
       var btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'search-result-item';
+      btn.className = 'search-result-item' + (index === currentIndex ? ' is-active' : '');
+      btn.setAttribute('data-result-index', String(index));
+      btn.setAttribute('aria-current', index === currentIndex ? 'true' : 'false');
       btn.setAttribute('data-session-id', item.sessionId);
       btn.setAttribute('data-floor', String(item.floor));
 
@@ -337,6 +387,7 @@
    * @param {number} targetFloor 目标楼层号（0 = 系统提示词层）
    */
   function jumpToSearchResult(sessionId, targetFloor) {
+    if (cancelPositionCheck) cancelPositionCheck();
     var isSame = getCurrentId() === sessionId;
 
     if (!isSame) {
@@ -345,7 +396,7 @@
       els.chatArea.scrollTop = 0;
     }
 
-    // 重绘时不做任何滚动，由下方的 scrollIntoView 统一接管定位
+    // 重绘及补齐目标后，只滚动聊天容器，避免触发平滑滚动懒加载冲突。
     renderMessages({ noScroll: true });
 
     // #0 系统提示词层已迁到顶部控制台：展开下拉并高亮命中的小模块行
@@ -357,10 +408,29 @@
     var node = ensureMessageRendered(targetFloor - 1);
     if (!node) return;
 
-    if (node.scrollIntoView) {
-      node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    var area = els.chatArea;
+    var stopped = false, frame = null, timer = null;
+    var events = ['wheel', 'touchstart', 'pointerdown', 'keydown'];
+    function cleanup() {
+      stopped = true;
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      if (timer !== null) window.clearTimeout(timer);
+      events.forEach(function (type) { area.removeEventListener(type, cleanup, true); });
+      if (cancelPositionCheck === cleanup) cancelPositionCheck = null;
     }
+    function centerTarget() {
+      if (stopped || getCurrentId() !== sessionId || !area.contains(node)) return;
+      var targetTop = node.getBoundingClientRect().top - area.getBoundingClientRect().top - area.clientTop + area.scrollTop;
+      var desired = Math.max(0, targetTop - (area.clientHeight - node.offsetHeight) / 2);
+      desired = Math.min(desired, Math.max(0, area.scrollHeight - area.clientHeight));
+      if (Math.abs(area.scrollTop - desired) > 3) area.scrollTop = desired;
+    }
+    cancelPositionCheck = cleanup;
+    events.forEach(function (type) { area.addEventListener(type, cleanup, { capture: true, passive: true }); });
+    centerTarget();
     flashSearchKeyword(node);
+    frame = window.requestAnimationFrame(function () { frame = null; centerTarget(); });
+    timer = window.setTimeout(function () { timer = null; centerTarget(); cleanup(); }, 120);
   }
 
   /**
@@ -387,8 +457,10 @@
     if (!hitRow && rows.length) hitRow = rows[0];
     if (!hitRow) return;
 
-    if (hitRow.scrollIntoView) {
-      hitRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (els.tpModuleList) {
+      var list = els.tpModuleList;
+      var top = hitRow.getBoundingClientRect().top - list.getBoundingClientRect().top - list.clientTop + list.scrollTop;
+      list.scrollTop = Math.max(0, top - (list.clientHeight - hitRow.offsetHeight) / 2);
     }
     flashFloorNode(hitRow);
   }
@@ -408,7 +480,7 @@
 
     // 输入即搜索
     els.chatSearchInput.addEventListener('input', function () {
-      renderSearchDropdown();
+      renderSearchDropdown(true);
     });
 
     // 聚焦时若有内容则重新展开
@@ -416,25 +488,21 @@
       if (els.chatSearchInput.value.trim()) renderSearchDropdown();
     });
 
-    // 回车：直接跳转到第一条结果
+    // 输入法确认不触发跳转；回车与上下按钮共用循环游标。
     els.chatSearchInput.addEventListener('keydown', function (e) {
-      if (e.key !== 'Enter') return;
+      if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
       e.preventDefault();
-      var first = els.chatSearchDropdown.querySelector('.search-result-item');
-      if (!first) return;
-      jumpToSearchResult(
-        first.getAttribute('data-session-id'),
-        parseInt(first.getAttribute('data-floor'), 10)
-      );
-      closeSearch(true);
+      stepSearchResult(e.shiftKey ? -1 : 1);
     });
+    if (els.chatSearchPrev) els.chatSearchPrev.addEventListener('click', function () { stepSearchResult(-1); });
+    if (els.chatSearchNext) els.chatSearchNext.addEventListener('click', function () { stepSearchResult(1); });
 
     // 清空按钮
     if (els.chatSearchClear) {
       els.chatSearchClear.addEventListener('click', function () {
         els.chatSearchInput.value = '';
         els.chatSearchClear.hidden = true;
-        closeSearchDropdown();
+        renderSearchDropdown(true);
         els.chatSearchInput.focus();
       });
     }
@@ -445,7 +513,7 @@
         searchScope = searchScope === 'current' ? 'all' : 'current';
         els.chatSearchScope.setAttribute('data-scope', searchScope);
         els.chatSearchScope.textContent = getSearchScopeLabel(searchScope);
-        renderSearchDropdown();
+        renderSearchDropdown(true);
       });
     }
 
@@ -454,11 +522,9 @@
       els.chatSearchDropdown.addEventListener('click', function (e) {
         var item = e.target.closest ? e.target.closest('.search-result-item') : null;
         if (!item) return;
-        var sid = item.getAttribute('data-session-id');
-        var floor = parseInt(item.getAttribute('data-floor'), 10);
-        if (!sid || !isFinite(floor)) return;
-        jumpToSearchResult(sid, floor);
-        closeSearch(true);
+        var index = Number(item.getAttribute('data-result-index'));
+        if (!Number.isInteger(index)) return;
+        selectSearchResult(index);
       });
     }
 

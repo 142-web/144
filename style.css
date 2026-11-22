@@ -775,6 +775,44 @@ body {
   color: var(--accent);
 }
 
+/* 计数与步进不收缩，给输入保留独立的弹性空间。 */
+#chat-search-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  gap: 1px;
+  white-space: nowrap;
+}
+#chat-search-nav[hidden] { display: none; }
+.chat-search-count {
+  flex-shrink: 0;
+  padding-inline: 2px;
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 24px;
+  font-variant-numeric: tabular-nums;
+}
+#chat-search-prev, #chat-search-next {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+#chat-search-prev:hover:not(:disabled), #chat-search-next:hover:not(:disabled) {
+  background: var(--cot-bg);
+  color: var(--accent);
+}
+#chat-search-prev:disabled, #chat-search-next:disabled { opacity: .35; cursor: default; }
+
 /* 结果浮层：绝对定位于搜索框下方，最大高度可滚动 */
 .chat-search-dropdown {
   position: absolute;
@@ -817,6 +855,12 @@ body {
 .search-result-item:focus {
   background: var(--bg);
   outline: none;
+}
+
+.search-result-item.is-active {
+  background: var(--cot-bg);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--accent);
 }
 
 .search-result-head {
@@ -6189,15 +6233,17 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 #header-search-wrap.search-expanded > #search-toggle-btn { color: var(--accent); background: var(--cot-bg); border-color: var(--border); }
 #header-search-wrap.search-expanded > #chat-search-box {
   display: flex; position: absolute; top: calc(100% + 8px); right: 0; z-index: 1200;
-  width: 320px; max-width: calc(100vw - 24px); min-height: 44px; padding: 8px;
+  width: 260px; max-width: calc(100vw - 24px); min-height: 44px; padding: 6px;
+  flex-wrap: nowrap; gap: 3px;
   border: 1px solid var(--border); border-radius: 12px; background: var(--panel);
   backdrop-filter: blur(16px); box-shadow: var(--shadow);
 }
 #header-search-wrap > #chat-search-dropdown {
   position: absolute; top: calc(100% + 56px); right: 0; z-index: 1200;
-  width: 340px; max-width: calc(100vw - 24px); box-sizing: border-box;
+  width: 260px; max-width: calc(100vw - 24px); box-sizing: border-box;
 }
 #topbar-track .chat-search-close { display: inline-flex; }
+#chat-search-box .chat-search-scope { padding-inline: 4px; }
 #topbar-track #chat-search-box .chat-search-input { flex: 1 1 0%; width: 0; min-width: 0; user-select: text; }
 @media (max-width: 768px) {
   #header-search-wrap.search-expanded > #chat-search-box,

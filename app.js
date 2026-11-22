@@ -249,6 +249,10 @@
     chatSearchInput: document.getElementById('chat-search-input'),
     chatSearchClear: document.getElementById('chat-search-clear'),
     chatSearchScope: document.getElementById('search-scope-btn'),
+    chatSearchNav: document.getElementById('chat-search-nav'),
+    chatSearchCount: document.getElementById('chat-search-count'),
+    chatSearchPrev: document.getElementById('chat-search-prev'),
+    chatSearchNext: document.getElementById('chat-search-next'),
     chatSearchDropdown: document.getElementById('chat-search-dropdown'),
 
     // 顶部云同步状态按钮（图标固定，仅文字部分动态更新）
@@ -13078,16 +13082,9 @@
       etag: response.headers.get('ETag'), exists: true };
   }
 
-  function isS3PreconditionFailed(err) {
-    if (!err) return false;
-    return Number(err.status || err.statusCode || (err.response && err.response.status)) === 412 ||
-      /\bPreconditionFailed\b|\b412\b/i.test(String(err.code || '') + ' ' + String(err.message || err));
-  }
-
   async function writeCloudHistoryIndex(identity, index) {
-    var headers = index.etag ? { 'If-Match': index.etag } : (!index.exists ? { 'If-None-Match': '*' } : {});
     var response = await cloudHistoryRequest(identity, 'PUT', CLOUD_HISTORY_INDEX,
-      JSON.stringify({ snapshots: index.snapshots }), 'application/json', headers);
+      JSON.stringify({ snapshots: index.snapshots }), 'application/json');
     index.etag = response.headers.get('ETag');
     index.exists = true;
   }
@@ -13112,18 +13109,7 @@
       lastModified: metadata.lastModified, manifestFingerprint: metadata.manifestFingerprint || '' };
     index.snapshots.unshift(snapshot);
     // 索引提交失败同样视为保险失败，调用方不得开始恢复。
-    try {
-      await writeCloudHistoryIndex(identity, index);
-    } catch (err) {
-      if (!isS3PreconditionFailed(err)) throw err;
-      // 仅重试一次：保留远端新条目，用最新 ETag 合并本次快照。
-      var latest = await readCloudHistoryIndex(identity);
-      latest.snapshots = latest.snapshots.filter(function (item) { return item.key !== snapshot.key; });
-      latest.snapshots.push(snapshot);
-      latest.snapshots.sort(function (a, b) { return b.timestamp - a.timestamp; });
-      Object.assign(index, latest);
-      await writeCloudHistoryIndex(identity, index);
-    }
+    await writeCloudHistoryIndex(identity, index);
     return snapshot;
   }
 
@@ -13160,27 +13146,7 @@
     } finally {
       if (deleted.size) {
         index.snapshots = index.snapshots.filter(function (item) { return !deleted.has(item.key); });
-        try {
-          await writeCloudHistoryIndex(identity, index);
-        } catch (err) {
-          if (!isS3PreconditionFailed(err)) throw err;
-          // 仅重试一次：按最新索引重算淘汰项，不覆盖其他设备的新快照。
-          var latest = await readCloudHistoryIndex(identity);
-          var latestKeep = selectCloudHistoryKeep(latest.snapshots, now, settings);
-          try {
-            for (var latestItem of latest.snapshots) {
-              if (config.cloudHistoryPauseCleanup === true) break;
-              if (!latestKeep.has(latestItem.key) && !deleted.has(latestItem.key)) {
-                await cloudHistoryRequest(identity, 'DELETE', latestItem.key);
-                deleted.add(latestItem.key);
-              }
-            }
-          } finally {
-            latest.snapshots = latest.snapshots.filter(function (item) { return !deleted.has(item.key); });
-            Object.assign(index, latest);
-            await writeCloudHistoryIndex(identity, index);
-          }
-        }
+        await writeCloudHistoryIndex(identity, index);
       }
     }
   }

@@ -14,7 +14,7 @@
   <title>MyChat</title>
   <!-- 代码高亮深色主题（hljs 官方 atom-one-dark 配色，国内高速镜像） -->
   <link rel="stylesheet" href="https://cdn.staticfile.net/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
-  <link rel="stylesheet" href="style.css?v=20260405_38" />
+  <link rel="stylesheet" href="style.css?v=20260405_31" />
 </head>
 
 <body>
@@ -121,6 +121,11 @@
             <!-- 搜索范围胶囊：当前对话 / 所有对话 -->
             <button type="button" id="search-scope-btn" class="chat-search-scope" data-scope="current"
               title="切换搜索范围（当前对话 / 所有对话）">当前</button>
+            <div id="chat-search-nav" role="group" aria-label="搜索结果导航" hidden>
+              <span id="chat-search-count" class="chat-search-count" aria-live="polite">0/0</span>
+              <button type="button" id="chat-search-prev" title="上一个 (Shift+Enter)" aria-label="上一个搜索结果" disabled><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg></button>
+              <button type="button" id="chat-search-next" title="下一个 (Enter)" aria-label="下一个搜索结果" disabled><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+            </div>
             <button type="button" id="chat-search-close" class="chat-search-close" title="关闭搜索" aria-label="关闭搜索"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
           </div>
           <!-- 搜索结果浮层：有关键词时展开，点击外部自动收起 -->
@@ -1074,8 +1079,8 @@
   </dialog>
 
   <script src="modules/html-sandbox.js?v=20260405_29"></script>
-  <script src="modules/chat-search.js?v=20260405_30"></script>
-  <script src="app.js?v=20260405_30"></script>
+  <script src="modules/chat-search.js?v=20260405_31"></script>
+  <script src="app.js?v=20260405_31"></script>
   <!-- 抓包基础设施：宿主创建后立即可用，早于记忆请求模块 -->
   <script src="modules/debug-inspector.js?v=20260405_21"></script>
   <script src="modules/task-hud.js?v=20260405_21"></script>
