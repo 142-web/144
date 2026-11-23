@@ -28,7 +28,6 @@
   var S3_CONFIG_FIELDS = ['s3Endpoint', 's3Bucket', 's3AccessKey', 's3SecretKey'];
   var PROVIDERS_KEY = 'mychat_providers';    // 多渠道数组（新版）
   var ACTIVE_TARGET_KEY = 'mychat_active_target'; // 当前选中的 { providerId, modelId }
-  var VISION_AUTO_PROBED_KEY = 'mychat_vision_auto_probed_v1'; // 本机一次性视觉实测标记，不同步或备份
   var SESSIONS_KEY = 'mychat_sessions';      // 全部会话（数组）
   var CURRENT_ID_KEY = 'mychat_current_id';  // 当前选中会话的 id
   var LAST_MODIFIED_KEY = 'mychat_last_modified'; // 全局最后修改时间戳（毫秒）
@@ -6193,6 +6192,18 @@
     }
   }
 
+  function inferModelVisionSupport(modelId) {
+    var id = String(modelId || '').trim().toLowerCase();
+    if (/embedding|rerank|whisper|tts|dall-e|moderation|bge-|o1-mini|o3-mini|deepseek-chat|deepseek-reasoner/.test(id)) {
+      return false;
+    }
+
+    return /gpt-4o|chatgpt-4o|gpt-4\.1|gpt-4\.5|gpt-5|gpt-4-vision|gpt-4-turbo|(?:^|\/)(?:o1|o3|o4)/.test(id) ||
+      /claude-3|claude-4|claude-sonnet-4|claude-opus-4|claude-haiku-4|gemini|qwen.*vl|qvq/.test(id) ||
+      /glm-4v|glm-4\.5v|glm-4\.6v|yi-vision|internvl|llava|pixtral|grok-2-vision|grok-3|grok-4/.test(id) ||
+      /doubao.*vision|step-1v|kimi-latest|vision|[-_]vl($|[-_0-9])/.test(id);
+  }
+
   /**
    * 规范化单个渠道对象，丢弃异常数据并去重模型
    */
@@ -6227,7 +6238,7 @@
           inputPrice: inputPrice,
           cachePrice: cachePrice,
           outputPrice: outputPrice,
-          visionSupport: item && typeof item.visionSupport === 'boolean' ? item.visionSupport : Boolean(raw.visionSupport)
+          visionSupport: item && typeof item.visionSupport === 'boolean' ? item.visionSupport : inferModelVisionSupport(id)
         });
       });
     }
@@ -6276,7 +6287,7 @@
         name: '默认渠道',
         baseUrl: config.baseUrl || DEFAULTS.baseUrl,
         apiKey: config.apiKey || '',
-        models: [{ id: legacyModel, alias: '', visionSupport: false }]
+        models: [{ id: legacyModel, alias: '', visionSupport: inferModelVisionSupport(legacyModel) }]
       });
       persistProviders(true);
       console.log('[渠道迁移] 已将旧版单 API 配置迁移为「默认渠道」');
@@ -7248,54 +7259,6 @@
     }
   }
 
-  async function autoProbeAllModelVision() {
-    try {
-      if (localStorage.getItem(VISION_AUTO_PROBED_KEY) === '1') return;
-      var queue = [];
-      providers.forEach(function (provider) {
-        if (!provider.baseUrl.trim() || !provider.apiKey.trim()) return;
-        provider.models.forEach(function (model) {
-          queue.push({ provider: provider, model: model, connection: Object.assign({}, provider) });
-        });
-      });
-      var index = 0;
-      var completed = [];
-      async function worker() {
-        while (index < queue.length) {
-          var task = queue[index++];
-          var result = await probeModelVision(task.connection, task.model);
-          var current = getProviderById(task.provider.id);
-          if (result.ok && current === task.provider && findProviderModel(current, task.model.id) === task.model &&
-              current.baseUrl === task.connection.baseUrl && current.apiKey === task.connection.apiKey &&
-              current.apiType === task.connection.apiType) {
-            task.model.visionSupport = result.supported;
-            completed.push(task);
-          }
-          // 每个工人完成后等待，始终最多两路在途请求。
-          await new Promise(function (resolve) { setTimeout(resolve, 200); });
-        }
-      }
-      await Promise.all([worker(), worker()]);
-      if (!persistProviders(true)) return;
-      localStorage.setItem(VISION_AUTO_PROBED_KEY, '1');
-      if (draftProviders && els.modal && els.modal.classList.contains('show')) {
-        completed.forEach(function (task) {
-          var draftProvider = getProviderById(task.provider.id, draftProviders);
-          var draftModel = findProviderModel(draftProvider, task.model.id);
-          if (draftModel && !modelVisionRevisions.has(draftModel) && !modelVisionProbes.has(draftModel) &&
-              draftProvider.baseUrl === task.connection.baseUrl && draftProvider.apiKey === task.connection.apiKey &&
-              draftProvider.apiType === task.connection.apiType) {
-            draftModel.visionSupport = task.model.visionSupport;
-          }
-        });
-        refreshModelVisionRows();
-      }
-      window.dispatchEvent(new Event('mychat-context-changed'));
-    } catch (err) {
-      console.warn('后台视觉实测未完成：', err);
-    }
-  }
-
   /**
    * 设置连通性检测结果文字
    */
@@ -7490,13 +7453,12 @@
       inputPrice: '',
       cachePrice: '',
       outputPrice: '',
-      visionSupport: false
+      visionSupport: inferModelVisionSupport(modelId)
     });
     els.newModelId.value = '';
 
     renderModelList();
     syncEditingProviderFields();
-    void probeDraftModelVision(provider, findProviderModel(provider, modelId));
     // 拉取面板中该模型的按钮需同步置灰
     if (!els.fetchPanel.hidden) renderFetchedList();
   }
@@ -7557,7 +7519,8 @@
     els.fetchList.innerHTML = '';
 
     var shown = 0;
-    fetchedModels.forEach(function (modelId) {
+    fetchedModels.forEach(function (model) {
+      var modelId = model.id;
       if (keyword && modelId.toLowerCase().indexOf(keyword) === -1) return;
       shown++;
 
@@ -7653,22 +7616,25 @@
         throw new Error('接口返回格式无法识别，缺少 data 数组。');
       }
 
-      var ids = [];
+      var models = new Map();
       list.forEach(function (item) {
         var id = '';
         if (typeof item === 'string') id = item.trim();
         else if (item && typeof item === 'object' && typeof item.id === 'string') {
           id = item.id.trim();
         }
-        if (!id) return;
-        if (ids.indexOf(id) === -1) ids.push(id);
+        if (!id || models.has(id)) return;
+        models.set(id, {
+          id: id,
+          visionSupport: typeof item.visionSupport === 'boolean' ? item.visionSupport : inferModelVisionSupport(id)
+        });
       });
 
-      if (ids.length === 0) {
+      if (models.size === 0) {
         throw new Error('接口未返回任何可用模型（data 为空）。');
       }
 
-      fetchedModels = ids;
+      fetchedModels = Array.from(models.values());
       if (els.fetchSearch) els.fetchSearch.value = '';
       if (els.fetchPanel) els.fetchPanel.hidden = false;
       renderFetchedList();
@@ -13206,7 +13172,8 @@
         var btn = e.target.closest ? e.target.closest('.fetch-item') : null;
         if (!btn || btn.disabled) return;
         var modelId = btn.getAttribute('data-model-id');
-        if (!modelId) return;
+        var fetchedModel = fetchedModels.find(function (model) { return model.id === modelId; });
+        if (!fetchedModel) return;
 
         var provider = getEditingProvider();
         if (!provider) return;
@@ -13218,12 +13185,11 @@
           inputPrice: '',
           cachePrice: '',
           outputPrice: '',
-          visionSupport: false
+          visionSupport: fetchedModel.visionSupport
         });
         renderModelList();
         renderFetchedList();
         syncEditingProviderFields();
-        void probeDraftModelVision(provider, findProviderModel(provider, modelId));
       });
     }
 
@@ -13692,7 +13658,6 @@
   });
   window.MyChatStorageReady = preloadLargeStorage().then(async function () {
     await init();
-    setTimeout(autoProbeAllModelVision, 3000);
   }).catch(function (error) {
     console.error('历史数据加载失败：', error);
     window.alert(error.message || '历史数据加载失败');
