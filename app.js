@@ -2587,6 +2587,7 @@
   // 缩放阅读锚点仅存内存；尺寸变化前的快照不能被重排产生的滚动覆盖。
   var resizeAnchor = { el: null, offsetTopFromViewport: 0, atBottom: true };
   var resizeAnchorTimer = null;
+  var resizeUnlockTimer = null;
   var resizeChatWidth = 0, resizeChatHeight = 0, resizeAnchorRaf = 0, messageResizeRaf = 0;
   window.isResizingWindow = false;
 
@@ -2632,13 +2633,14 @@
     if (!widthChanged && !heightChanged) return;
     window.isResizingWindow = true;
     clearTimeout(resizeAnchorTimer);
+    clearTimeout(resizeUnlockTimer);
     if (resizeAnchorRaf) cancelAnimationFrame(resizeAnchorRaf);
     resizeAnchorRaf = requestAnimationFrame(function () {
       resizeAnchorRaf = 0;
       resizeChatWidth = chatBox.clientWidth;
       resizeChatHeight = chatBox.clientHeight;
       restoreResizeAnchor();
-      resizeAnchorTimer = setTimeout(function () {
+      resizeUnlockTimer = setTimeout(function () {
         window.isResizingWindow = false;
         captureResizeAnchor();
       }, 150);
@@ -2677,7 +2679,7 @@
 
   /**
    * 智能跟随滚动：只有用户没有主动上滑时才自动拉到底部
-   * 流式输出每个 chunk 都会调用，用户上滑阅读时保持视口不动
+   * 流式正文更新后按渲染帧调用，用户上滑阅读时保持视口不动
    */
   function scrollToBottom() {
     if (!els.chatArea) return;
@@ -2698,19 +2700,20 @@
     var distanceToBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight;
 
+    var previousTop = container._lastScrollTop;
     if (distanceToBottom > 60) {
       userScrolledUp = true;
-    } else if (distanceToBottom <= 50) {
+    } else if (distanceToBottom <= 50 && (!userScrolledUp || container.scrollTop > previousTop)) {
       userScrolledUp = false;
       container._holdScroll = false;
     }
-    var previousTop = container._lastScrollTop;
     if (container.scrollTop <= 180 && renderedStartIndex > 0 &&
         typeof previousTop === 'number' && container.scrollTop < previousTop) {
       prependMessageRows(Math.max(0, renderedStartIndex - 15));
     }
     container._lastScrollTop = container.scrollTop;
-    captureResizeAnchor();
+    clearTimeout(resizeAnchorTimer);
+    resizeAnchorTimer = setTimeout(captureResizeAnchor, 150);
   }
 
   /**
@@ -5804,7 +5807,7 @@
   /**
    * 流式高频更新时用 requestAnimationFrame 合并重绘，避免长文本反复解析卡顿
    */
-  function scheduleAssistantRender(bubble, msg) {
+  function scheduleAssistantRender(bubble, msg, shouldFollow) {
     bubble._latestRender = msg;
     if (bubble._rafPending || bubble._finalized) return;
     bubble._rafPending = true;
@@ -5814,6 +5817,8 @@
       if (bubble._finalized || !bubble.isConnected) return;
       if (bubble._canRenderStream && !bubble._canRenderStream()) return;
       renderAssistantBubble(bubble, bubble._latestRender, true);
+      // 正文更新完成后统一贴底，沿用当前通道、分支及保位条件。
+      if (shouldFollow && shouldFollow()) scrollToBottom();
     });
   }
 
@@ -10845,11 +10850,11 @@
             // 合并到下一帧渲染，避免长文本每个字都重新解析 Markdown
             task.latestRender = { content: responseMsg.content, reasoning: responseMsg.reasoning || '', nativeReasoning: responseMsg.nativeReasoning || '', tagReasoning: responseMsg.tagReasoning || '' };
             if (isCurrentSession(targetSession, targetSubChatId) && task.isViewingTarget() && bubble.isConnected) {
-              scheduleAssistantRender(bubble, task.latestRender);
+              scheduleAssistantRender(bubble, task.latestRender, function () {
+                // 中间楼层重答时不强行把滚动条拉到整个聊天室最底部。
+                return !keepScroll && task.isViewingTarget() && isCurrentSession(targetSession, targetSubChatId);
+              });
             }
-
-            // 中间楼层重答时不强行把滚动条拉到整个聊天室最底部
-            if (!keepScroll && task.isViewingTarget() && isCurrentSession(targetSession, targetSubChatId)) scrollToBottom();
           }
           return false;
         };
@@ -12716,6 +12721,12 @@
       els.chatArea.addEventListener('click', toggleActionsOnTouch);
       // 智能跟随滚动：监听用户滚动，判断是否需要暂停自动跟随
       els.chatArea.addEventListener('scroll', handleChatScroll, { passive: true });
+      els.chatArea.addEventListener('wheel', function (e) {
+        if (e.deltaY < 0) {
+          userScrolledUp = true;
+          els.chatArea._lastScrollTop = els.chatArea.scrollTop;
+        }
+      }, { passive: true });
       initResizeScrollAnchor();
     }
 
@@ -12835,13 +12846,20 @@
       closeQuickModelPanel();
     });
 
-    // 页面滚动或窗口尺寸变化时收起面板，避免面板与按钮错位
+    // 参数输入与软键盘高度变化不收起面板；仅宽度变化时处理错位。
+    var lastQuickPanelWinWidth = window.innerWidth;
     window.addEventListener('resize', function () {
-      closeQuickParamsPanel();
+      const widthChanged = Math.abs(window.innerWidth - lastQuickPanelWinWidth) >= 2;
+      lastQuickPanelWinWidth = window.innerWidth;
+      const quickParamsPanel = els.quickParamsPanel;
+      const activeInQuickPanel = !!(quickParamsPanel && document.activeElement && quickParamsPanel.contains(document.activeElement));
+      if (!activeInQuickPanel && widthChanged) closeQuickParamsPanel();
       closeQuickModelPanel();
     });
     if (els.chatArea) {
       els.chatArea.addEventListener('scroll', function () {
+        if (window.isResizingWindow || (els.quickParamsPanel && document.activeElement &&
+            els.quickParamsPanel.contains(document.activeElement))) return;
         closeQuickParamsPanel();
         closeQuickModelPanel();
       }, { passive: true });
