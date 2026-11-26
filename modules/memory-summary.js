@@ -549,6 +549,96 @@
     return lines.join('\n\n');
   }
 
+  // 仅记录本页已推进的用户轮次；预览和同轮重试不能消耗保活计数。
+  var memoryV4PreparedTurns = new WeakMap();
+
+  function memoryV4ModeOf(owner) {
+    var data = owner && owner.memoryData, meta = owner && owner.memoryMeta || {};
+    return data && data.memoryState && data.memoryState.mode || meta.memoryMode || data && data.memoryMode;
+  }
+
+  function memoryV4FitText(text, budget) {
+    text = String(text || '');
+    if (estimateTokens(text) <= budget) return text;
+    var low = 0, high = text.length;
+    while (low < high) {
+      var mid = Math.ceil((low + high) / 2);
+      if (estimateTokens(text.slice(0, mid)) <= budget) low = mid;
+      else high = mid - 1;
+    }
+    // 不切断 UTF-16 代理对。
+    if (low && /[\uD800-\uDBFF]/.test(text.charAt(low - 1))) low--;
+    return text.slice(0, low);
+  }
+
+  function resolveMemoryV4Channel1Details(subChat, recentMessages, options) {
+    var opts = options || {}, data = subChat && subChat.memoryData;
+    var empty = {content:'', hitIds:[], hitKeywords:{}, selectedIds:[], tokens:0};
+    if (!isV4Mode(memoryV4ModeOf(subChat)) || !data || !data.v4State || !Array.isArray(data.v4State.catalog)) return empty;
+    var catalog = opts.readOnly ? deepCopy(data.v4State.catalog) : data.v4State.catalog;
+    var texts = (Array.isArray(recentMessages) ? recentMessages : []).filter(function (msg) {
+      return msg && !msg.isError && (msg.role === 'user' || msg.role === 'assistant');
+    }).map(function (msg) {
+      var text = window.MyChatAttachments ? window.MyChatAttachments.messageText(msg) : String(msg.content || '');
+      return stripThink(text).replace(/<[^>]*>/g, '').trim().toLowerCase();
+    }).filter(Boolean).slice(-3);
+    var hits = new Set(), hitKeywords = Object.create(null);
+    catalog.forEach(function (evt) {
+      if (!opts.regenerate && evt.stickyTurns > 0) evt.stickyTurns--;
+      var matched = normalizeMemoryV4Keywords(evt.keywords).filter(function (word) {
+        return texts.some(function (text) { return text.indexOf(word.toLowerCase()) !== -1; });
+      });
+      if (matched.length) { evt.stickyTurns = 4; hits.add(evt.id); hitKeywords[evt.id] = matched; }
+    });
+    var extra = new Set(Array.isArray(opts.extraRecallIds) ? opts.extraRecallIds : []);
+    var candidates = catalog.filter(function (evt) { return extra.has(evt.id) || hits.has(evt.id) || evt.stickyTurns > 0; });
+    function priority(evt) { return extra.has(evt.id) ? 0 : hits.has(evt.id) ? 1 : 2; }
+    candidates.sort(function (a, b) { return priority(a) - priority(b) || (b.stickyTurns || 0) - (a.stickyTurns || 0); });
+    var selected = new Set(), lines = [], prefix = '【区段 C：动态唤醒详情】\n';
+    var suffix = opts.forbidFurtherRecall ? '\n[系统提示：所需历史档案已全部加载至上方区段 C，本轮禁止再次输出 <recall> 标签，请直接回答用户。]' : '';
+    candidates.forEach(function (evt) {
+      if (selected.has(evt.id) || !String(evt.detail || '').trim()) return;
+      var detail = '<event id="' + String(evt.id).replace(/["<>\r\n]/g, '') + '">\n<detail>\n' + evt.detail + '\n</detail>\n</event>';
+      if (estimateTokens(prefix + lines.concat(detail).join('\n\n') + suffix) > 2000) return;
+      selected.add(evt.id); lines.push(detail);
+    });
+    var content = lines.length || suffix ? prefix + lines.join('\n\n') + suffix : '';
+    return {content:content, hitIds:Array.from(hits), hitKeywords:hitKeywords, selectedIds:Array.from(selected), tokens:estimateTokens(content)};
+  }
+
+  function getMemoryV4Injection(session, subChat, options) {
+    var owner = subChat || memoryOwner(session), opts = options || {};
+    var data = owner && owner.memoryData, meta = owner && owner.memoryMeta || session && session.memoryMeta || {};
+    var mode = memoryV4ModeOf(owner);
+    if (!isV4Mode(mode) || !data || !(data.enabled === true || meta.autoSummary === true)) return null;
+    var state = data.v4State || createMemoryV4State();
+    var aPrefix = '【区段 A：常驻核心态】\n';
+    var sectionA = aPrefix + memoryV4FitText(memoryV4SectionAText(state), 4000 - estimateTokens(aPrefix));
+    // 对拼接后的完整区段再次封顶，含标题与分隔符。
+    sectionA = memoryV4FitText(sectionA, 4000);
+    var bPrefix = '【区段 B：单行事件目录】\n', lines = [];
+    function singleLine(value) { return String(value || '').replace(/\s+/g, ' ').trim(); }
+    (Array.isArray(state.catalog) ? state.catalog : []).map(function (evt, index) {
+      var floors = String(evt.floors || '').match(/\d+/g) || [];
+      return {evt:evt, index:index, floor:floors.reduce(function (max, floor) { return Math.max(max, Number(floor)); }, 0)};
+    }).sort(function (a, b) { return b.floor - a.floor || b.index - a.index; }).forEach(function (item) {
+      var evt = item.evt;
+      var line = [evt.id, evt.floors, evt.time, evt.status, evt.brief].map(singleLine).join(' | ') + ' ' +
+        normalizeMemoryV4Keywords(evt.keywords).map(function (word) { return '#' + singleLine(word); }).join(' ');
+      if (estimateTokens(bPrefix + lines.concat(line).join('\n')) <= 2000) lines.push(line);
+    });
+    var sectionB = bPrefix + lines.join('\n');
+    var recent = opts.recentMessages || owner.messages || [];
+    var channel = resolveMemoryV4Channel1Details(owner, recent, Object.assign({}, opts, {readOnly:true, regenerate:true}));
+    if (opts.forbidFurtherRecall && !channel.content) {
+      channel.content = '【区段 C：动态唤醒详情】\n[系统提示：所需历史档案已全部加载至上方区段 C，本轮禁止再次输出 <recall> 标签，请直接回答用户。]';
+      channel.tokens = estimateTokens(channel.content);
+    }
+    return {frontSystemText:(mode === 'v4_rp' ? V4_RP_INJECT_SHELL : V4_ENG_INJECT_SHELL) + '\n\n' + sectionA + '\n\n' + sectionB,
+      depth1Text:channel.content, metadata:{memoryMode:mode, channel1HitIds:channel.hitIds, channel1HitKeywords:channel.hitKeywords,
+        selectedDetailIds:channel.selectedIds, sectionTokens:{A:estimateTokens(sectionA), B:estimateTokens(sectionB), C:channel.tokens}}};
+  }
+
   function computeMemoryV4SectionAStatus(v4State) {
     var tokens = Math.max(0, Math.round(estimateTokens(memoryV4SectionAText(v4State)) || 0));
     var percent = tokens / 4000 * 100;
@@ -935,8 +1025,9 @@
     var owner = targetOwner || memoryOwner(session);
     var data = owner && owner.memoryData;
     if (!data) return null;
+    if (isV4Mode(memoryV4ModeOf(owner))) return null; // 4.0 不进入旧虚拟记忆库适配链路。
     ensureMemoryStateSynced(data, data.memoryState && data.memoryState.mode || getMeta(session, owner).memoryMode);
-    if (isV4Mode(data.memoryState.mode)) return null; // 第一步不启用 4.0 主对话注入。
+    if (isV4Mode(data.memoryState.mode)) return null;
     if (data.memoryState.mode === 'general') return null;
     var entries = [data.overviewEntry].concat(data.eventEntries || []).filter(function (entry) {
       return entry && typeof entry.content === 'string' && entry.content.trim();
@@ -2019,8 +2110,23 @@
     if (opts.targetMessages && ctx.owner.messages !== opts.targetMessages) throw new Error('源消息列表已替换');
     ctx.meta = deepCopy(getMeta(session, ctx.owner));
     memoryData = getMemoryData(session, ctx.owner);
-    if (isV4Mode(ctx.meta.memoryMode)) return {apiMessages:[], retrievalTriggers:[], retrievalBookId:'',
-      activeRecalledEventIds:[], summarizedFloorCursor:memoryData.summarizedFloorCursor};
+    if (isV4Mode(ctx.meta.memoryMode)) {
+      if (memoryData.enabled === true || ctx.meta.autoSummary === true) {
+        var previousTurn = memoryV4PreparedTurns.get(ctx.owner);
+        var beforeSticky = (memoryData.v4State && memoryData.v4State.catalog || []).map(function (evt) { return evt.stickyTurns; });
+        resolveMemoryV4Channel1Details(ctx.owner, (ctx.messages || []).slice(0, cutoff + 1), {
+          regenerate:opts.regenerate === true || previousTurn === targetUserMsg,
+          extraRecallIds:opts.extraRecallIds
+        });
+        if (!saveSession(session)) {
+          (memoryData.v4State && memoryData.v4State.catalog || []).forEach(function (evt, index) { evt.stickyTurns = beforeSticky[index]; });
+          throw new Error('记忆保活保存失败');
+        }
+        memoryV4PreparedTurns.set(ctx.owner, targetUserMsg);
+      }
+      return {apiMessages:[], retrievalTriggers:[], retrievalBookId:'',
+        activeRecalledEventIds:[], summarizedFloorCursor:memoryData.summarizedFloorCursor};
+    }
     if (ctx.meta.memoryMode === 'general') return {apiMessages:[], retrievalTriggers:[], retrievalBookId:'',
       activeRecalledEventIds:[], summarizedFloorCursor:memoryData.summarizedFloorCursor};
     var summaryChanged = memoryData.summarizedFloorCursor !== previousCursor ||
@@ -3346,6 +3452,9 @@
     openConsole: openConsole,
     getVirtualMemoryBook: getVirtualMemoryBook,
     getGeneralMemoryInjection: getGeneralMemoryInjection,
+    isV4Mode: isV4Mode,
+    getMemoryV4Injection: getMemoryV4Injection,
+    resolveMemoryV4Channel1Details: resolveMemoryV4Channel1Details,
     DEFAULT_GENERAL_SUMMARIZE_PROMPT: DEFAULT_GENERAL_SUMMARIZE_PROMPT,
     onContextChanged: function () {
       if (refreshTimer) clearTimeout(refreshTimer);
@@ -3376,4 +3485,6 @@
     DEFAULT_SUMMARIZE_PROMPT: DEFAULT_SUMMARIZE_PROMPT,
     DEFAULT_RECALL_PROMPT: DEFAULT_RECALL_PROMPT
   };
+  // 新版本的具名出口与既有入口共用同一个模块实例。
+  window.MyChatMemorySummary = window.MemorySummaryModule;
 })();

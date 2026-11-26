@@ -1339,7 +1339,7 @@
       var wire = window.MyChatAttachments && target ? window.MyChatAttachments.toWire(preview.apiMessages, session.messages, target) : preview.apiMessages;
       var meta = debug.mainMeta(preview); meta.note = '只读快照；总结与检索未执行';
       var id = debug.start({category:'dry_run', status:'dry_run', title:'[干跑预演] 当前主对话拼装', sessionId:session.id,
-        sessionTitle:session.title || '', subChatId:getActiveSubChatId(session), inspectorMeta:meta,
+        sessionTitle:session.title || '', subChatId:getActiveSubChatId(session), inspectorMeta:Object.assign(meta, preview.memoryV4 ? {memoryV4:preview.memoryV4} : {}),
         request:debug.request(target, wire, params.maxTokens, params.temperature)});
       debug.open(id); return id;
     },
@@ -10219,7 +10219,7 @@
    * @param {number|null} cutoffIndex 仅取 [0, cutoffIndex] 区间的消息（中间楼层重答时截断后续楼层）
    * @param {object} [session] 当前会话（用于 {{char}} / {{user}} 宏变量替换）
    */
-  function buildApiMessages(messages, contextLimit, cutoffIndex, session, summarizedFloorCursor, includeFloors, targetSubChatId) {
+  function buildApiMessages(messages, contextLimit, cutoffIndex, session, summarizedFloorCursor, includeFloors, targetSubChatId, options) {
     var source = messages || [];
     var macroSession = session || getCurrentSession();
     // 重答目标楼层截断：绝不把目标楼层之后的后续楼层发给 API
@@ -10295,13 +10295,29 @@
       }
       result.splice(insertIdx, 0, {role:'system', content:generalMemory.content});
     }
+    // 4.0 独立出口：读取裁剪前有效历史，预览不推进 Sticky。
+    var v4Module = window.MyChatMemorySummary || memoryModule;
+    var v4Mode = owner && owner.memoryData && owner.memoryData.memoryState && owner.memoryData.memoryState.mode ||
+      owner && owner.memoryMeta && owner.memoryMeta.memoryMode || owner && owner.memoryData && owner.memoryData.memoryMode;
+    if (v4Module && typeof v4Module.isV4Mode === 'function' && v4Module.isV4Mode(v4Mode) && memorySummaryEnabled) {
+      var v4Injection = v4Module.getMemoryV4Injection(macroSession, owner, Object.assign({}, options || {}, {recentMessages:source}));
+      if (v4Injection) {
+        if (!(options && options.deferV4Injection) && v4Injection.frontSystemText) result.unshift({role:'system', content:v4Injection.frontSystemText});
+        if (!(options && options.deferV4Injection) && v4Injection.depth1Text) {
+          var v4LastUser = -1;
+          for (var vi = result.length - 1; vi >= 0; vi--) if (result[vi].role === 'user') { v4LastUser = vi; break; }
+          result.splice(v4LastUser < 0 ? result.length : v4LastUser, 0, {role:'system', content:v4Injection.depth1Text});
+        }
+        result.memoryV4Injection = v4Injection;
+      }
+    }
     // 楼层辅助字段仅供本轮裁剪，绝不泄漏到模型载荷。
     result.forEach(function (entry) { delete entry._floor; });
     return result;
   }
 
   // 正文与只读预览共用同一套组装顺序；调用者负责发送前总结 / 检索。
-  function assembleRequestContext(session, targetMessages, params, cutoffUserIndex, summarizedFloorCursor, preparedPreset, retrievalTriggers, retrievalBookId, targetSubChatId, autoTitleTarget) {
+  function assembleRequestContext(session, targetMessages, params, cutoffUserIndex, summarizedFloorCursor, preparedPreset, retrievalTriggers, retrievalBookId, targetSubChatId, autoTitleTarget, memoryOptions) {
     // 上下文快照：剥离历史思维链，绝不外发 reasoning 字段；按楼层 + 上下文上限双重截断
     // 传入 session 使 {{char}} / {{user}} 宏变量在发往 API 前落地为真实名称
     // 先按原模块顺序赋值，再展开预设和历史读取，禁止按角色分组后重复执行赋值。
@@ -10312,9 +10328,11 @@
       session,
       summarizedFloorCursor,
       true,
-      targetSubChatId
+      targetSubChatId,
+      Object.assign({}, memoryOptions || {}, {deferV4Injection:true})
     );
-    var includedHistory = requestMessages.slice();
+    var memoryV4Injection = requestMessages.memoryV4Injection || null;
+    var includedHistory = memoryV4Injection ? requestMessages.filter(function (msg) { return typeof msg.floor === 'number'; }) : requestMessages.slice();
     requestMessages = requestMessages.map(function (msg) { return {role:msg.role, content:msg.content}; });
 
     // 系统提示词预设：仅 roleType === 'system'（未设置视为 system）的小模块，
@@ -10364,12 +10382,15 @@
         : envBlock;
     }
 
+    var mainSystemMessage = null;
     if (mergedSystemPrompt) {
       // 宏替换：{{char}} / {{user}} 在系统提示词中必须落地为真实名称
-      requestMessages.unshift({
+      mainSystemMessage = {
         role: 'system',
         content: replaceMacros(mergedSystemPrompt, session)
-      });
+      };
+      if (memoryV4Injection) mainSystemMessage._v4MainSystem = true;
+      requestMessages.unshift(mainSystemMessage);
     }
 
     // 预输入 Prefill / 后置强指令：从当前会话绑定的预设中取出对应分组
@@ -10466,7 +10487,22 @@
       requestMessages.push({ role: 'system', content: '[系统传输协议例外条款] 请严格遵守前文所有预设、格式、标签及停止规则，切勿省略或破坏任何预设要求的末尾内容。仅作为系统底层传输完整性校验的唯一例外：当你按照预设要求彻底完成全部输出并准备结束本次回复时，请在整条回复的最末尾（所有预设标签与正文之后）额外附带一个结束标记 <mychat_end/>，随后立即停止输出。' });
     }
 
-    return {apiMessages:requestMessages, history:includedHistory, systemPromptChars:mergedSystemPrompt.length, prefillPrefix:prefillPrefix, triggeredEntryNames:triggeredEntryNames, triggeredEntries:triggeredEntryDetails, injectedEntries:ctxResult && ctxResult.injectedEntries || []};
+    // 仅 4.0 在全部位置型扩展完成后恢复精准位置，避免外部深度注入打散缓存前缀。
+    if (memoryV4Injection) {
+      // 独立记忆块不进入旧宏 / 正则 / 世界书管道，只在此处注入一次。
+      var v4MainIndex = mainSystemMessage ? requestMessages.findIndex(function (msg) {
+        return msg === mainSystemMessage || msg._v4MainSystem === true ||
+          (msg.role === 'system' && msg.content === mainSystemMessage.content);
+      }) : -1;
+      requestMessages.forEach(function (msg) { delete msg._v4MainSystem; });
+      requestMessages.splice(v4MainIndex < 0 ? 0 : v4MainIndex + 1, 0, {role:'system', content:memoryV4Injection.frontSystemText});
+      if (memoryV4Injection.depth1Text) {
+        var depth1Index = -1;
+        for (var di = requestMessages.length - 1; di >= 0; di--) if (requestMessages[di].role === 'user') { depth1Index = di; break; }
+        requestMessages.splice(depth1Index < 0 ? requestMessages.length : depth1Index, 0, {role:'system', content:memoryV4Injection.depth1Text});
+      }
+    }
+    return {apiMessages:requestMessages, history:includedHistory, memoryV4:memoryV4Injection && memoryV4Injection.metadata, systemPromptChars:mergedSystemPrompt.length, prefillPrefix:prefillPrefix, triggeredEntryNames:triggeredEntryNames, triggeredEntries:triggeredEntryDetails, injectedEntries:ctxResult && ctxResult.injectedEntries || []};
   }
 
   function isDefaultSubChatTitle(t) {
@@ -10748,6 +10784,8 @@
           subChatId: targetSubChatId,
           targetMessages: targetMessages,
           cutoffUserIndex: cutoffUserIndex,
+          regenerate: opts.regenerate === true || opts.swipeBranch === true || (typeof opts.reuseIndex === 'number' && opts.reuseIndex >= 0),
+          extraRecallIds: opts.extraRecallIds,
           signal: task.controller.signal,
           contextLimit: params.contextLimit,
           params: params
@@ -10772,7 +10810,7 @@
         .replace(/<chat_title>[\s\S]*$/, '')
         .replace(/<(?:c|ch|cha|chat|chat_|chat_t|chat_ti|chat_tit|chat_titl|chat_title)?$/, '');
     };
-    var assembled = assembleRequestContext(session, targetMessages, params, cutoffUserIndex, summarizedFloorCursor, preparedPreset, retrievalTriggers, retrievalBookId, targetSubChatId, autoTitleTarget);
+    var assembled = assembleRequestContext(session, targetMessages, params, cutoffUserIndex, summarizedFloorCursor, preparedPreset, retrievalTriggers, retrievalBookId, targetSubChatId, autoTitleTarget, {extraRecallIds:opts.extraRecallIds, forbidFurtherRecall:opts.forbidFurtherRecall});
     var requestMessages = assembled.apiMessages;
     var prefillPrefix = assembled.prefillPrefix;
     var triggeredEntryNames = assembled.triggeredEntryNames;
@@ -10978,7 +11016,7 @@
           if (traceId) debug.finish(traceId, {status:'error',response:{httpStatus:400,errorMsg:'接口不支持 stream_options，已重试'}});
           var wireBody = JSON.parse(bodyText);
           traceId = debug.start({category:'main_chat',title:'主对话请求',sessionId:session.id,sessionTitle:session.title || '',subChatId:targetSubChatId,
-            inspectorMeta:debug.mainMeta(assembled),request:Object.assign(debug.request({provider:activeProvider,model:activeModel},wireBody.messages,params.maxTokens,params.temperature),{body:wireBody})});
+            inspectorMeta:Object.assign(debug.mainMeta(assembled), assembled.memoryV4 ? {memoryV4:assembled.memoryV4} : {}),request:Object.assign(debug.request({provider:activeProvider,model:activeModel},wireBody.messages,params.maxTokens,params.temperature),{body:wireBody})});
         }
         return (window.MyChatProviders ? window.MyChatProviders.fetch.bind(null, activeProvider) : fetch)(endpoint, {
           method: 'POST',
@@ -11866,6 +11904,7 @@
       autoTitleTarget: autoTitleTarget,
       firstUserText: firstUser.content || (firstUser.attachments && firstUser.attachments[0] && firstUser.attachments[0].name) || '附件',
       cutoffUserIndex: cutoffUserIndex,
+      regenerate: true,
       reuseIndex: reuseIndex,
       keepScroll: keepScroll,
       // 重新回复：旧回复移入 swipes 历史分支，新回复写入新分支槽位
