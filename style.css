@@ -154,6 +154,8 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   background: var(--panel);
   border-right: 1px solid var(--border);
 }
@@ -225,15 +227,14 @@ body {
   transform: scale(0.98);
 }
 
-/* 历史会话列表：独立滚动，不撑破侧边栏 */
+/* 会议与历史列表自然铺开，共用侧边栏滚动。 */
 .session-list {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: visible;
   padding: 10px;
   -webkit-overflow-scrolling: touch;
 }
@@ -242,8 +243,9 @@ body {
 .conference-stage[hidden], .conference-stage [hidden] { display: none !important; }
 .main-column.is-conference-view > #chat-area,
 .main-column.is-conference-view > .composer,
-.main-column.is-conference-view #topbar-track { display: none !important; }
-.main-column.is-conference-view > .topbar { min-height: 0; padding-block: 0; border: 0; }
+.main-column.is-conference-view #topbar-track > [data-toolbar-item="title"],
+.main-column.is-conference-view #topbar-track > [data-toolbar-item="preset"] { display: none !important; }
+.main-column.is-conference-view #topbar-track { justify-content: flex-end; }
 .conference-stage { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; color: var(--text); }
 .conference-stage-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 20px; border-bottom: 1px solid var(--border); }
 .conference-stage-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
@@ -254,6 +256,8 @@ body {
 .conference-speaker { display: inline-flex; padding: 0; border: 0; background: transparent; flex: 0 0 28px; cursor: pointer; }
 .conference-message-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .conference-speaker-name { display: block; margin-bottom: 6px; font-size: 12px; color: var(--text-dim); }
+.conference-message-actions { display: flex; gap: 3px; margin-top: 6px; }
+.conference-message-editor { display: block; width: 100%; box-sizing: border-box; min-height: 100px; padding: 8px; resize: vertical; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
 .conference-message .md-body { font-size: 14px; line-height: 1.7; }
 .conference-message .md-body > :first-child { margin-top: 0; }
 .conference-message pre { max-width: 100%; overflow-x: auto; }
@@ -276,7 +280,7 @@ body {
   .conference-controls { gap: 8px; }
   .conference-controls select { max-width: 120px; }
 }
-.conference-list-wrap { flex: 0 1 auto; min-height: 36px; max-height: 32vh; overflow-y: auto; overflow-x: hidden; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.conference-list-wrap { flex: 0 0 auto; min-height: 36px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
 .conference-group-head { width: 100%; border: 0; background: transparent; font-family: inherit; text-align: left; }
 .conference-item { min-width: 0; border-radius: 8px; }
 .conference-row, .conference-member, .conference-choice, .conference-section-head, .conference-footer { display: flex; align-items: center; gap: 8px; min-width: 0; }

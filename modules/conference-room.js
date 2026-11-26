@@ -29,6 +29,32 @@
   function normalize(record) {
     if (!Array.isArray(record.messages)) record.messages = [];
     if (!record.syncState || typeof record.syncState !== 'object') record.syncState = {};
+    if (!Array.isArray(record.deliveries)) {
+      record.deliveries = [];
+      // 老会议没有关联表，仅接纳唯一正文匹配，不猜测已被手改的消息。
+      record.messages.forEach(function (message, index) {
+        if (message.role !== 'assistant' || !message.sessionId) return;
+        var session = host.getSessionById(message.sessionId), matches = [];
+        if (!session) return;
+        var owners = session.subChats && session.subChats.length ? session.subChats : [session];
+        owners.forEach(function (owner) {
+          (owner.messages || []).forEach(function (m, position) {
+            if (m.role === 'assistant' && m.content === message.content) matches.push({ owner: owner, position: position, message: m });
+          });
+        });
+        if (matches.length !== 1) return;
+        var match = matches[0], user = match.owner.messages[match.position - 1];
+        var from = index;
+        if (user && user.role === 'user') {
+          for (var i = 0; i < index; i++) if (String(user.content).includes(identity(record.messages[i]))) { from = i; break; }
+        }
+        record.deliveries.push({ sessionId: session.id, subChatId: match.owner === session ? '' : match.owner.id,
+          userId: user && user.role === 'user' && from < index ? user.id : null,
+          userText: user && user.role === 'user' && from < index && !user.id ? user.content : null,
+          assistantId: match.message.id, assistantText: !match.message.id ? match.message.content : null,
+          index: index, from: from, cursor: index });
+      });
+    }
     return record;
   }
   function contextKey(session) { return session.id + ':' + (session.activeSubChatId || ''); }
@@ -42,7 +68,7 @@
     if (index < 0) return false;
     // 配置允许在等待回复时修改，调度器只覆盖自身运行字段。
     var next = Object.assign({}, list[index]);
-    ['messages', 'syncState', 'pendingRetry', 'proposePause', 'status', 'statusText'].forEach(function (key) { next[key] = record[key]; });
+    ['messages', 'deliveries', 'syncState', 'pendingRetry', 'proposePause', 'status', 'statusText'].forEach(function (key) { next[key] = record[key]; });
     next.updatedAt = Date.now();
     list[index] = next;
     if (!commit(list)) return false;
@@ -130,7 +156,7 @@
     var previousTop = timeline.scrollTop;
     var nearBottom = timeline.scrollHeight - previousTop - timeline.clientHeight < 70;
     timeline.replaceChildren();
-    record.messages.forEach(function (message) {
+    record.messages.forEach(function (message, index) {
       var row = el('article', 'conference-message');
       var session = message.sessionId && host.getSessionById(message.sessionId);
       var name = message.role === 'user' ? '用户' : message.name || (session && sessionName(session)) || 'AI';
@@ -139,7 +165,12 @@
       if (message.sessionId) { avatar.type = 'button'; avatar.title = '打开原对话：' + name; avatar.addEventListener('click', function () { jump(message.sessionId); }); }
       var body = el('div', 'conference-message-main'), content = el('div', 'md-body');
       content.innerHTML = host.renderMarkdown(String(message.content || ''), message.role, session || undefined);
-      body.append(el('strong', 'conference-speaker-name', name), content); row.append(avatar, body); timeline.appendChild(row);
+      var actions = el('div', 'conference-message-actions');
+      actions.append(button('edit', '修改消息', function () { editMessage(record.id, index, message, content, actions); }),
+        button('remove', '删除消息', function () { void deleteMessage(record.id, index, message); }),
+        button('reset', message.role === 'user' ? '重发消息' : '重新生成', function () { void reroll(record.id, index, message); }));
+      actions.querySelectorAll('button').forEach(function (node) { node.disabled = jobs.has(record.id); });
+      body.append(el('strong', 'conference-speaker-name', name), content, actions); row.append(avatar, body); timeline.appendChild(row);
     });
     if (!record.messages.length) timeline.appendChild(el('div', 'conference-empty', '开始会议讨论'));
     timeline.scrollTop = nearBottom ? timeline.scrollHeight : previousTop;
@@ -153,6 +184,136 @@
     sendButton.hidden = running; pauseButton.hidden = !running;
     sendButton.disabled = !!record.pendingRetry;
     receiver.disabled = relayTurns.disabled = draft.disabled = running;
+  }
+  // 关联只按明确分区与消息 ID 寻找；原对话被手改或删除时静默跳过。
+  function linked(delivery, key) {
+    var session = host.getSessionById(delivery.sessionId);
+    if (!session) return null;
+    var owner = delivery.subChatId ? (session.subChats || []).find(function (sub) { return sub.id === delivery.subChatId; }) : session;
+    var list = owner && owner.messages;
+    var fallback = key === 'userId' ? 'userText' : 'assistantText';
+    var matches = (list || []).filter(function (m) {
+      return delivery[key] ? m.id === delivery[key] : typeof delivery[fallback] === 'string' &&
+        m.role === (key === 'userId' ? 'user' : 'assistant') && m.content === delivery[fallback];
+    });
+    var message = matches.length === 1 ? matches[0] : null;
+    return message ? { session: session, list: list, message: message } : null;
+  }
+  function saveLinked(ref) {
+    if (host.saveSession(ref.session, { background: true }) === false) notify('原对话保存失败');
+  }
+  function updateLinked(record, index, previous, next, remove) {
+    record.deliveries.forEach(function (delivery) {
+      var ref = linked(delivery, 'assistantId');
+      if (delivery.index === index && ref && previous.role === 'assistant') {
+        if (remove) ref.list.splice(ref.list.indexOf(ref.message), 1);
+        else {
+          ref.message.content = next;
+          if (Array.isArray(ref.message.swipes)) {
+            var swipe = ref.message.swipes[ref.message.swipeIndex || 0];
+            if (swipe) swipe.content = next;
+          }
+        }
+        saveLinked(ref);
+      }
+      if (index >= delivery.from && index < delivery.cursor) {
+        ref = linked(delivery, 'userId');
+        if (ref) {
+          var before = identity(previous), after = identity(Object.assign({}, previous, { content: next }));
+          if (ref.message.content.includes(before)) {
+            if (remove && previous.role === 'user') ref.list.splice(ref.list.indexOf(ref.message), 1);
+            else ref.message.content = ref.message.content.replace(before, remove ? '' : after);
+            saveLinked(ref);
+          }
+        }
+      }
+    });
+  }
+  function updateLegacyLinks(record, index, previous, next, remove) {
+    record.deliveries.forEach(function (d) {
+      if (d.index === index && d.assistantText != null) d.assistantText = remove ? null : next;
+      if (index >= d.from && index < d.cursor && typeof d.userText === 'string') {
+        d.userText = remove && previous.role === 'user' ? null : d.userText.replace(identity(previous), remove ? '' : identity(Object.assign({}, previous, { content: next })));
+      }
+    });
+  }
+  function messageRecord(id, index, snapshot) {
+    var record = currentRecord(id);
+    if (!record || jobs.has(id) || JSON.stringify(record.messages[index]) !== JSON.stringify(snapshot)) return null;
+    return normalize(record);
+  }
+  function resetSync(record) {
+    record.syncState = {};
+    record.proposePause = false;
+    if (record.pendingRetry) {
+      var p = record.pendingRetry;
+      if (host.getSessionById(p.targetSessionId)) record.pendingRetry = checkpoint(record, p.targetSessionId, p.remainingTurns, p.totalTurns, p.turn);
+    }
+  }
+  function editMessage(id, index, snapshot, content, actions) {
+    if (!messageRecord(id, index, snapshot)) return;
+    var editor = el('textarea', 'input conference-message-editor');
+    editor.value = snapshot.content; editor.rows = 5; editor.setAttribute('aria-label', '修改消息');
+    content.replaceChildren(editor); actions.replaceChildren();
+    actions.append(button('save', '保存修改', function () {
+      var record = messageRecord(id, index, snapshot), text = editor.value;
+      if (!record) { notify('会议已更新，请重试'); renderStage(); return; }
+      if (!text.trim()) { notify('请输入消息内容'); return; }
+      var original = JSON.parse(JSON.stringify(record));
+      record.messages[index].content = text;
+      updateLegacyLinks(record, index, snapshot, text, false);
+      resetSync(record);
+      if (persist(record)) { updateLinked(original, index, snapshot, text, false); notify('已保存'); }
+    }), button('close', '取消修改', renderStage));
+    editor.addEventListener('keydown', function (event) { if (event.key === 'Escape') renderStage(); });
+    editor.focus();
+  }
+  function cleanLinked(record, cut) {
+    record.deliveries.forEach(function (delivery) {
+      if (delivery.index < cut) return;
+      ['assistantId', 'userId'].forEach(function (key) {
+        var ref = linked(delivery, key);
+        if (ref) { ref.list.splice(ref.list.indexOf(ref.message), 1); saveLinked(ref); }
+      });
+    });
+  }
+  async function deleteMessage(id, index, snapshot) {
+    if (!messageRecord(id, index, snapshot)) return;
+    if (!await window.showAppConfirm('删除此消息？', { title: '删除消息', danger: true })) return;
+    var record = messageRecord(id, index, snapshot);
+    if (!record) { notify('会议已更新，请重试'); return; }
+    var original = JSON.parse(JSON.stringify(record));
+    record.messages.splice(index, 1);
+    updateLegacyLinks(record, index, snapshot, '', true);
+    record.deliveries.forEach(function (d) {
+      if (d.index > index) d.index--;
+      else if (d.index === index) d.assistantId = null;
+      if (d.from > index) d.from--;
+      if (d.cursor > index) d.cursor--;
+    });
+    resetSync(record);
+    if (persist(record)) { updateLinked(original, index, snapshot, '', true); notify('已删除'); }
+  }
+  async function reroll(id, index, snapshot) {
+    var record = messageRecord(id, index, snapshot);
+    if (!record) return;
+    var isUser = snapshot.role === 'user', cut = isUser ? index + 1 : index;
+    var progress = snapshot.relay || {}, total = Math.max(1, Math.min(20, progress.totalTurns || record.maxTurns || 4));
+    var completed = 0;
+    for (var i = index - 1; i >= 0 && record.messages[i].role !== 'user'; i--) completed++;
+    var turn = isUser ? 1 : Math.max(1, progress.turn || completed + 1);
+    var remaining = isUser ? total : Math.max(1, progress.remainingTurns || total - turn + 1);
+    var target = isUser ? (progress.targetSessionId || record.participantSessionIds[0]) : snapshot.sessionId;
+    var original = JSON.parse(JSON.stringify(record));
+    record.messages = record.messages.slice(0, cut);
+    record.deliveries = record.deliveries.filter(function (d) { return d.index < cut; });
+    record.syncState = {}; record.proposePause = false;
+    try { record.pendingRetry = checkpoint(record, target, remaining, total, turn); }
+    catch (err) { notify(err.message); return; }
+    record.status = 'ready'; record.statusText = '';
+    if (!persist(record)) return;
+    cleanLinked(original, cut);
+    await execute(record);
   }
   function identity(message) { return '[发言者：' + (message.role === 'user' ? '用户' : message.name || 'AI') + '] ' + message.content; }
   function checkpoint(record, targetId, remaining, total, turn) {
@@ -182,7 +343,7 @@
     if (!Number.isInteger(turns) || turns < 1 || turns > 20) { notify('轮数范围为 1～20'); return; }
     var target = receiver.value;
     if (record.participantSessionIds.filter(function (sid) { return !!host.getSessionById(sid); }).length < 2) { notify('至少需要 2 个 AI'); return; }
-    record.messages.push({ role: 'user', name: '用户', content: text, createdAt: Date.now() });
+    record.messages.push({ role: 'user', name: '用户', content: text, createdAt: Date.now(), relay: { totalTurns: turns, targetSessionId: target } });
     record.proposePause = false;
     try { record.pendingRetry = checkpoint(record, target, turns, turns, 1); }
     catch (err) { notify(err.message); return; }
@@ -203,10 +364,13 @@
     try {
       while (record.pendingRetry && jobs.get(record.id) === job) {
         var pending = record.pendingRetry, session = host.getSessionById(pending.targetSessionId);
-        if (!session || (session.activeSubChatId || '') !== pending.subChatId) throw new Error('原对话分区已变更，请切回后恢复');
-        if (pending.mode === 'retry') {
-          var user = lastUser(session);
-          if (!user || user.id !== pending.userId || user.content !== pending.userContent) throw new Error('原对话已更新，无法安全重试');
+        if (!session) throw new Error('参会对话已删除');
+        // 原对话不再是会议的继续条件；关联失效直接以会议全文重新发送。
+        var user = lastUser(session);
+        if ((session.activeSubChatId || '') !== pending.subChatId ||
+            (pending.mode === 'retry' && (!user || user.id !== pending.userId || user.content !== pending.userContent))) {
+          record.syncState[contextKey(session)] = { cursor: 0, prompt: false };
+          pending = record.pendingRetry = checkpoint(record, session.id, pending.remainingTurns, pending.totalTurns, pending.turn);
         }
         record.status = 'running';
         record.statusText = '正在等待 ' + sessionName(session) + ' 回复…（第 ' + pending.turn + '/' + pending.totalTurns + ' 轮）';
@@ -220,6 +384,10 @@
           var appended = lastUser(session);
           if (appended && appended !== previous) {
             pending.mode = 'retry'; pending.userId = appended.id; pending.userContent = appended.content;
+            var previousSync = record.syncState[pending.syncKey];
+            record.deliveries.push({ sessionId: session.id, subChatId: pending.subChatId,
+              userId: appended.id, assistantId: null, index: record.messages.length,
+              from: previousSync ? previousSync.cursor : 0, cursor: pending.cursor });
             record.syncState[pending.syncKey] = { cursor: pending.cursor, prompt: true };
           }
         }
@@ -231,7 +399,14 @@
           var reason = result && result.error;
           throw new Error(reason === 'CHANNEL_BUSY' ? '参会对话正在生成，请稍后恢复' : result && result.aborted ? '回复已中断，可恢复会议' : '回复失败，可恢复会议' + (reason ? '：' + String(reason).slice(0, 160) : ''));
         }
-        record.messages.push({ role: 'assistant', sessionId: session.id, name: sessionName(session), content: result.content, createdAt: Date.now() });
+        var delivery = record.deliveries.find(function (d) { return d.sessionId === session.id && d.subChatId === pending.subChatId && d.userId === pending.userId; });
+        if (delivery && result.msg) {
+          if (!result.msg.id) { result.msg.id = 'conference_msg_' + Date.now() + '_' + Math.random().toString(36).slice(2); host.saveSession(session, { background: true }); }
+          delivery.assistantId = result.msg.id;
+          delivery.index = record.messages.length;
+        }
+        record.messages.push({ role: 'assistant', sessionId: session.id, name: sessionName(session), content: result.content, createdAt: Date.now(),
+          relay: { turn: pending.turn, totalTurns: pending.totalTurns, remainingTurns: pending.remainingTurns } });
         // 自己生成的回复已在原对话中，不应在下一棒再回灌自身。
         record.syncState[pending.syncKey] = { cursor: record.messages.length, prompt: true };
         var agreed = record.proposePause === true && /\[同意暂停确认\]\s*$/.test(result.content);
