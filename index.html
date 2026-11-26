@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <!-- 报错采集基础设施：先于外部依赖与全部业务脚本加载 -->
-  <script src="modules/error-console.js?v=20261127_2"></script>
+  <script src="modules/error-console.js?v=20261127_3"></script>
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
@@ -16,7 +16,7 @@
   <title>MyChat</title>
   <!-- 代码高亮深色主题（hljs 官方 atom-one-dark 配色，国内高速镜像） -->
   <link rel="stylesheet" href="https://cdn.staticfile.net/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
-  <link rel="stylesheet" href="style.css?v=20261127_2" />
+  <link rel="stylesheet" href="style.css?v=20261127_3" />
 </head>
 
 <body>
@@ -318,10 +318,27 @@
                   <input id="qp-stream" type="checkbox" checked />
                   <span>流式输出</span>
                 </label>
-                <label class="qp-switch" title="仅作为静默环境背景提供当前现实日期时间，角色扮演时优先服从故事内时间">
-                  <input id="qp-real-time" type="checkbox" checked />
-                  <span>静默提供现实时间</span>
-                </label>
+                <div class="chat-param-toggle">
+                  <span>提供现实时间</span>
+                  <label class="ui-switch ui-switch-sm" title="提供现实时间">
+                    <input id="qp-real-time" type="checkbox" aria-label="提供现实时间" checked />
+                    <span class="ui-switch-track"></span>
+                  </label>
+                </div>
+                <div class="chat-opacity-field">
+                  <label for="qp-bubble-opacity">对话框透明度</label>
+                  <div class="chat-opacity-controls">
+                    <input id="qp-bubble-opacity" type="range" min="10" max="100" step="1" value="100" />
+                    <input id="qp-bubble-opacity-value" type="number" min="10" max="100" step="1" value="100" aria-label="对话框透明度百分比" /><span>%</span>
+                  </div>
+                </div>
+                <div class="chat-opacity-field">
+                  <label for="qp-text-opacity">文本透明度</label>
+                  <div class="chat-opacity-controls">
+                    <input id="qp-text-opacity" type="range" min="30" max="100" step="1" value="100" />
+                    <input id="qp-text-opacity-value" type="number" min="30" max="100" step="1" value="100" aria-label="文本透明度百分比" /><span>%</span>
+                  </div>
+                </div>
                 <label class="qp-switch" title="随记忆库动态变更层数">
                   <input id="qp-dynamic-context" type="checkbox" />
                   <span>随记忆库动态变更层数</span>
@@ -522,6 +539,27 @@
                 </label>
               </div>
 
+              <div class="chat-param-toggle">
+                <span>提供现实时间</span>
+                <label class="ui-switch" title="提供现实时间">
+                  <input id="cfg-real-time" type="checkbox" aria-label="提供现实时间" checked />
+                  <span class="ui-switch-track"></span>
+                </label>
+              </div>
+              <div class="chat-opacity-field">
+                <label for="cfg-bubble-opacity">对话框透明度</label>
+                <div class="chat-opacity-controls">
+                  <input id="cfg-bubble-opacity" type="range" min="10" max="100" step="1" value="100" />
+                  <input id="cfg-bubble-opacity-value" type="number" min="10" max="100" step="1" value="100" aria-label="对话框透明度百分比" /><span>%</span>
+                </div>
+              </div>
+              <div class="chat-opacity-field">
+                <label for="cfg-text-opacity">文本透明度</label>
+                <div class="chat-opacity-controls">
+                  <input id="cfg-text-opacity" type="range" min="30" max="100" step="1" value="100" />
+                  <input id="cfg-text-opacity-value" type="number" min="30" max="100" step="1" value="100" aria-label="文本透明度百分比" /><span>%</span>
+                </div>
+              </div>
               <label class="qp-switch">
                 <input id="cfg-dynamic-context" type="checkbox" />
                 <span>随记忆库动态变更层数</span>
@@ -927,6 +965,20 @@
         <button type="button" id="session-char-close" class="preset-close" aria-label="关闭">×</button>
       </div>
       <div class="session-char-body">
+        <div class="field chat-background-field">
+          <label for="sc-background-url">对话背景图</label>
+          <div class="chat-background-controls">
+            <input id="sc-background-url" type="url" placeholder="https://…" autocomplete="off" />
+            <label class="btn-session-icon" for="sc-background-file" title="上传背景图" aria-label="上传背景图" tabindex="0" role="button">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/></svg>
+            </label>
+            <input id="sc-background-file" type="file" accept="image/*" hidden />
+            <button id="sc-background-clear" type="button" class="btn-session-icon" title="清除背景图" aria-label="清除背景图">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 7h14M10 3h4M7 7l1 14h8l1-14M10 11v6m4-6v6"/></svg>
+            </button>
+          </div>
+          <img id="sc-background-preview" class="chat-background-preview" alt="背景预览" referrerpolicy="no-referrer" hidden />
+        </div>
         <div class="char-avatar-row">
           <div class="char-avatar-col">
             <span class="char-avatar-label">角色头像</span>
@@ -1089,15 +1141,15 @@
     <footer><button type="button" class="preset-import-icon" data-preset-import-close title="取消" aria-label="取消"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button><button type="button" id="xml-preset-submit" class="preset-import-icon" title="解析并创建中文模块预设" aria-label="解析并创建中文模块预设"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg></button></footer>
   </dialog>
 
-  <script src="modules/html-sandbox.js?v=20261127_2"></script>
-  <script src="modules/chat-search.js?v=20261127_2"></script>
-  <script src="modules/cloud-sync.js?v=20261127_2"></script>
-  <script src="app.js?v=20261127_2"></script>
+  <script src="modules/html-sandbox.js?v=20261127_3"></script>
+  <script src="modules/chat-search.js?v=20261127_3"></script>
+  <script src="modules/cloud-sync.js?v=20261127_3"></script>
+  <script src="app.js?v=20261127_3"></script>
   <!-- 抓包基础设施：宿主创建后立即可用，早于记忆请求模块 -->
-  <script src="modules/debug-inspector.js?v=20261127_2"></script>
-  <script src="modules/task-hud.js?v=20261127_2"></script>
+  <script src="modules/debug-inspector.js?v=20261127_3"></script>
+  <script src="modules/task-hud.js?v=20261127_3"></script>
   <!-- 应用弹窗与全局遮罩守卫：先于其他扩展加载 -->
-  <script src="modules/app-dialogs.js?v=20261127_2"></script>
+  <script src="modules/app-dialogs.js?v=20261127_3"></script>
 
   <!-- ===== 可复用独立模块区（必须放在 app.js 之后，按依赖顺序引入） =====
        新增扩展模块时在这里追加一行，例如：
@@ -1107,26 +1159,26 @@
        不允许修改 app.js 核心链路；双击 index.html（file://）也能正常加载。
   -->
   <!-- 世界书模块：工具箱入口 + 管理界面 + 发送前词条注入（@Depth 支持） -->
-  <script src="modules/tavern-macros.js?v=20261127_2"></script>
-  <script src="modules/worldbook.js?v=20261127_2"></script>
+  <script src="modules/tavern-macros.js?v=20261127_3"></script>
+  <script src="modules/worldbook.js?v=20261127_3"></script>
   <!-- 记忆总结与 Token 统计：实时 Token 估算 + 世界书二级编号索引记忆库 + 小 AI 检索召回 -->
-  <script src="modules/memory-summary.js?v=20261127_2"></script>
+  <script src="modules/memory-summary.js?v=20261127_3"></script>
   <!-- 三层正则引擎：全局 / 预设 / 会话正则统一管理，接入 beforeSend / onReceive / onRender 阀门 -->
-  <script src="modules/regex-engine.js?v=20261127_2"></script>
+  <script src="modules/regex-engine.js?v=20261127_3"></script>
   <!-- 酒馆导入器：PNG（tEXt / zTXt / iTXt）角色卡解析 + 角色卡 / 酒馆预设一键导入 -->
-  <script src="modules/tavern-importer.js?v=20261127_2"></script>
-  <script src="modules/vocab-mapping.js?v=20261127_2"></script>
-  <script src="modules/quick-replies.js?v=20261127_2"></script>
-  <script src="modules/external-chat-importer.js?v=20261127_2"></script>
-  <script src="modules/provider-shortcuts.js?v=20261127_2"></script>
-  <script src="modules/feature-help.js?v=20261127_2"></script>
-  <script src="modules/chat-navigation.js?v=20261127_2"></script>
-  <script src="modules/attachments.js?v=20261127_2"></script>
-  <script src="modules/auto-retry.js?v=20261127_2"></script>
-  <script src="modules/image-generator.js?v=20261127_2"></script>
-  <script src="modules/preset-workbench.js?v=20261127_2"></script>
-  <script src="modules/plugin-hub.js?v=20261127_2"></script>
-  <script src="modules/conference-room.js?v=20261127_2"></script>
+  <script src="modules/tavern-importer.js?v=20261127_3"></script>
+  <script src="modules/vocab-mapping.js?v=20261127_3"></script>
+  <script src="modules/quick-replies.js?v=20261127_3"></script>
+  <script src="modules/external-chat-importer.js?v=20261127_3"></script>
+  <script src="modules/provider-shortcuts.js?v=20261127_3"></script>
+  <script src="modules/feature-help.js?v=20261127_3"></script>
+  <script src="modules/chat-navigation.js?v=20261127_3"></script>
+  <script src="modules/attachments.js?v=20261127_3"></script>
+  <script src="modules/auto-retry.js?v=20261127_3"></script>
+  <script src="modules/image-generator.js?v=20261127_3"></script>
+  <script src="modules/preset-workbench.js?v=20261127_3"></script>
+  <script src="modules/plugin-hub.js?v=20261127_3"></script>
+  <script src="modules/conference-room.js?v=20261127_3"></script>
 </body>
 
 </html>

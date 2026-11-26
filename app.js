@@ -131,6 +131,8 @@
 
   // 主聊天任务仅驻留内存；准备、网络与收尾全程按会话 + 子对话独立占锁。
   var activeGenerationMap = new Map();
+  // 仅驻留内存，进入会话即清除，刷新不保留。
+  var completedUnreadSessions = new Set();
 
   // 流式输出时的延迟保存计时器
   var saveTimer = null;
@@ -1647,6 +1649,10 @@
     maxTokens: null,
     stream: true,
     realTime: true,
+    bubbleOpacity: 100,
+    textOpacity: 100,
+    bubbleOpacityCustomized: false,
+    textOpacityCustomized: false,
     antiTruncateEnabled: false,
     antiTruncateMaxRetries: 2
   };
@@ -1689,7 +1695,11 @@
       maxTokens: normalizePositiveInt(src.maxTokens),
       stream: src.stream !== false,
       // 静默现实时间背景板开关（仅控制本次请求是否附带 <env_context>）
-      realTime: src.realTime !== false,
+      realTime: src.realTime === undefined ? (globalChatParams || DEFAULT_CHAT_PARAMS).realTime !== false : src.realTime !== false,
+      bubbleOpacity: normalizeChatOpacity(src.bubbleOpacity, 10),
+      textOpacity: normalizeChatOpacity(src.textOpacity, 30),
+      bubbleOpacityCustomized: src.bubbleOpacityCustomized === true,
+      textOpacityCustomized: src.textOpacityCustomized === true,
       // 旧参数缺少开关时继承全局默认，显式关闭不受全局影响。
       antiTruncateEnabled: src.antiTruncateEnabled === undefined
         ? (globalChatParams || DEFAULT_CHAT_PARAMS).antiTruncateEnabled === true
@@ -1697,6 +1707,30 @@
       antiTruncateMaxRetries: src.antiTruncateMaxRetries === '' || src.antiTruncateMaxRetries == null || !isFinite(Number(src.antiTruncateMaxRetries))
         ? 2 : Math.min(5, Math.max(1, Math.floor(Number(src.antiTruncateMaxRetries))))
     };
+  }
+
+  function normalizeChatOpacity(value, min) {
+    if (value === '' || value == null || !isFinite(Number(value))) return 100;
+    return Math.min(100, Math.max(min, Math.round(Number(value))));
+  }
+
+  // 只解析显示参数的继承，不把有效默认值固化成独立覆盖。
+  function resolveChatAppearanceParams(source) {
+    var params = cloneChatParams(source);
+    var defaults = getGlobalChatParams();
+    if (!params.bubbleOpacityCustomized) params.bubbleOpacity = defaults.bubbleOpacity;
+    if (!params.textOpacityCustomized) params.textOpacity = defaults.textOpacity;
+    return params;
+  }
+
+  function applyChatAppearance() {
+    if (!els.chatArea) return;
+    var session = getCurrentSession();
+    var params = getSessionParams(session);
+    els.chatArea.style.setProperty('--chat-bubble-opacity', params.bubbleOpacity + '%');
+    els.chatArea.style.setProperty('--chat-text-opacity', String(params.textOpacity / 100));
+    var background = normalizeChatBackground(session && session.backgroundImage);
+    els.chatArea.style.backgroundImage = background ? 'url(' + JSON.stringify(background) + ')' : '';
   }
 
   /**
@@ -1757,7 +1791,7 @@
   function getSessionParams(session, targetSubChat) {
     if (!session || typeof session !== 'object') return getGlobalChatParams();
     var sub = targetSubChat || getActiveSubChat(session);
-    if (!sub) return cloneChatParams(session.params || getGlobalChatParams());
+    if (!sub) return resolveChatAppearanceParams(session.params || getGlobalChatParams());
 
     if (!sub.params || typeof sub.params !== 'object') {
       sub.params = cloneChatParams(session.params || getGlobalChatParams());
@@ -1768,7 +1802,7 @@
       }
     }
 
-    return cloneChatParams(sub.params);
+    return resolveChatAppearanceParams(sub.params);
   }
 
   // 快捷参数连续输入共用防抖计时器，仅延后落盘，不延后内存更新。
@@ -1824,7 +1858,9 @@
       current.topP !== base.topP ||
       current.maxTokens !== base.maxTokens ||
       current.stream !== base.stream ||
-      current.antiTruncateEnabled !== base.antiTruncateEnabled
+      current.antiTruncateEnabled !== base.antiTruncateEnabled ||
+      current.realTime !== base.realTime ||
+      current.bubbleOpacityCustomized || current.textOpacityCustomized
     );
   }
 
@@ -2979,6 +3015,7 @@
     // AI 角色头像 / 用户头像（图片直链或 Base64，空字符串表示使用首字徽章）
     session.avatar = typeof raw.avatar === 'string' ? raw.avatar : '';
     session.userAvatar = typeof raw.userAvatar === 'string' ? raw.userAvatar : '';
+    session.backgroundImage = normalizeChatBackground(raw.backgroundImage);
     // AI 角色名称 / 用户名称（消息气泡旁显示）
     session.charName = typeof raw.charName === 'string' ? raw.charName : '';
     session.userName = typeof raw.userName === 'string' ? raw.userName : '';
@@ -3501,6 +3538,8 @@
    */
   function selectSession(id) {
     if (!getSession(id)) return;
+    completedUnreadSessions.delete(id);
+    refreshSessionGenerationIndicators();
     window.dispatchEvent(new CustomEvent('mychat-session-selected', { detail: { sessionId: id } }));
     if (id === currentId) {
       refreshMemoryContext();
@@ -3767,6 +3806,35 @@
   /**
    * 创建单个会话列表行（含头像、收藏、角色设置、删除按钮）
    */
+  function isSessionGenerating(sessionId) {
+    var busy = false;
+    activeGenerationMap.forEach(function (task) { if (task.session && task.session.id === sessionId) busy = true; });
+    if (pendingReplyPolicies) pendingReplyPolicies.forEach(function (key) {
+      if (key.indexOf(sessionId + '::') === 0) busy = true;
+    });
+    return busy;
+  }
+
+  function updateSessionGenerationIndicator(indicator, sessionId) {
+    var busy = isSessionGenerating(sessionId);
+    var unread = completedUnreadSessions.has(sessionId);
+    var state = busy ? 'running' : unread ? 'completed' : '';
+    if (indicator.dataset.state === state) return;
+    indicator.dataset.state = state;
+    indicator.className = 'session-generation-status' + (busy ? ' is-running' : unread ? ' is-completed' : '');
+    indicator.title = busy ? '正在生成' : unread ? '回复已完成' : '';
+    indicator.setAttribute('aria-label', indicator.title);
+    indicator.innerHTML = state ? '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      (busy ? '<path d="M21 12a9 9 0 1 1-9-9"/>' : '<path d="m5 12 4 4L19 6"/>') + '</svg>' : '';
+  }
+
+  function refreshSessionGenerationIndicators() {
+    if (!els.sessionList) return;
+    els.sessionList.querySelectorAll('.session-generation-status').forEach(function (indicator) {
+      updateSessionGenerationIndicator(indicator, indicator.closest('.session-item').dataset.id);
+    });
+  }
+
   function createSessionItem(session) {
     var item = document.createElement('div');
     item.className = 'session-item' + (session.id === currentId ? ' active' : '');
@@ -3841,6 +3909,11 @@
       try { await window.MyChatTavern.exportCharacterCardPng(window.MyChat.getSessionById(session.id)); }
       catch (err) { showToast(err.message || '角色卡导出失败'); }
     });
+    var indicator = document.createElement('span');
+    indicator.className = 'session-generation-status';
+    indicator.setAttribute('role', 'status');
+    updateSessionGenerationIndicator(indicator, session.id);
+    actions.appendChild(indicator);
     actions.appendChild(exportBtn);
     actions.appendChild(pinBtn);
     actions.appendChild(charBtn);
@@ -3929,6 +4002,60 @@
 
   // === [ANCHOR: SESSION_CHAR_MODAL] 角色与对话设置（头像 / 名称 / 开场白 / 导入角色卡） ===
   /* ============ 角色与对话设置弹窗 ============ */
+
+  var backgroundImageDraft = '';
+  var backgroundDraftRevision = 0;
+  var backgroundUploadPending = false;
+
+  function normalizeChatBackground(value) {
+    if (typeof value !== 'string') return '';
+    var text = value.trim();
+    if (/^data:image\/(?:webp|png|jpeg|gif|avif);base64,[a-z0-9+/=]+$/i.test(text)) return text.length <= 360000 ? text : '';
+    try {
+      var url = new URL(text);
+      return /^https?:$/.test(url.protocol) && text.length <= 8192 ? url.href : '';
+    } catch (error) { return ''; }
+  }
+
+  function refreshBackgroundPreview() {
+    var preview = document.getElementById('sc-background-preview');
+    if (!preview) return;
+    var value = normalizeChatBackground(backgroundImageDraft);
+    preview.hidden = !value;
+    if (value) preview.src = value;
+    else preview.removeAttribute('src');
+  }
+
+  // 背景保持完整比例，逐步降采样，最终 DataURL 不超过约 264KB。
+  function compressBackgroundFile(file) {
+    return new Promise(function (resolve, reject) {
+      if (!file || !/^image\//.test(file.type) || file.size > 20 * 1024 * 1024) {
+        reject(new Error('请选择20MB内图片')); return;
+      }
+      var image = new Image();
+      var objectUrl = URL.createObjectURL(file);
+      image.onerror = function () { URL.revokeObjectURL(objectUrl); reject(new Error('图片解析失败')); };
+      image.onload = function () {
+        URL.revokeObjectURL(objectUrl);
+        try {
+          if (!image.naturalWidth || !image.naturalHeight) throw new Error('图片尺寸异常');
+          var canvas = document.createElement('canvas');
+          var scale = Math.min(1, 1280 / Math.max(image.naturalWidth, image.naturalHeight));
+          for (var attempt = 0; attempt < 5; attempt++) {
+            canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+            canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+            canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+            var data = canvas.toDataURL('image/webp', Math.max(0.45, 0.8 - attempt * 0.08));
+            if (data.indexOf('data:image/webp;') !== 0) throw new Error('浏览器不支持WebP');
+            if (data.length <= 360000) { resolve(data); return; }
+            scale *= 0.75;
+          }
+          throw new Error('图片过大，请换图');
+        } catch (error) { reject(error); }
+      };
+      image.src = objectUrl;
+    });
+  }
 
   /**
    * 把本地图片缩放裁切压缩为 128x128 的 Base64 字符串（控制 localStorage 体积）
@@ -4022,6 +4149,12 @@
     charModalSessionId = session.id;
     charAvatarDraft = session.avatar || '';
     userAvatarDraft = session.userAvatar || '';
+    backgroundDraftRevision++;
+    backgroundUploadPending = false;
+    backgroundImageDraft = session.backgroundImage || '';
+    document.getElementById('sc-background-url').value = /^https?:/i.test(backgroundImageDraft) ? backgroundImageDraft : '';
+    document.getElementById('sc-background-file').value = '';
+    refreshBackgroundPreview();
 
     if (els.scCharAvatarUrl) els.scCharAvatarUrl.value = session.avatar || '';
     if (els.scUserAvatarUrl) els.scUserAvatarUrl.value = session.userAvatar || '';
@@ -4063,6 +4196,9 @@
     els.sessionCharModal.classList.remove('show');
     els.sessionCharModal.setAttribute('aria-hidden', 'true');
     charModalSessionId = null;
+    backgroundDraftRevision++;
+    backgroundUploadPending = false;
+    backgroundImageDraft = '';
     charAvatarDraft = '';
     userAvatarDraft = '';
   }
@@ -4123,6 +4259,10 @@
       closeSessionCharModal();
       return;
     }
+    if (backgroundUploadPending) { showToast('图片处理中'); return; }
+    if (backgroundImageDraft && !normalizeChatBackground(backgroundImageDraft)) { showToast('图片地址无效'); return; }
+    var previous = Object.assign({}, session);
+    session.backgroundImage = normalizeChatBackground(backgroundImageDraft);
     session.avatar = charAvatarDraft || '';
     session.userAvatar = userAvatarDraft || '';
     session.charName = els.scCharNameInput ? els.scCharNameInput.value.trim() : '';
@@ -4139,7 +4279,11 @@
     }
 
     session.updatedAt = Date.now();
-    persistSessions();
+    if (!persistSessions()) {
+      Object.assign(session, previous);
+      showToast('保存失败，存储已满');
+      return;
+    }
     syncActiveSubMessages(session);
     flushSave();
     touchLastModified();
@@ -5539,6 +5683,7 @@
   }
 
   function renderMessages(options) {
+    applyChatAppearance();
     refreshCurrentChatTitle();
     if (!els.chatArea) return;
     var opts = options && typeof options === 'object' ? options : {};
@@ -6754,6 +6899,10 @@
     if (!inputs) return;
     if (inputs.stream) inputs.stream.checked = params.stream !== false;
     if (inputs.realTime) inputs.realTime.checked = params.realTime !== false;
+    ['bubbleOpacity', 'textOpacity'].forEach(function (key) {
+      if (inputs[key]) inputs[key].value = params[key];
+      if (inputs[key + 'Value']) inputs[key + 'Value'].value = params[key];
+    });
     if (inputs.antiTruncateEnabled) inputs.antiTruncateEnabled.checked = params.antiTruncateEnabled === true;
     if (inputs.antiTruncateMaxRetries) inputs.antiTruncateMaxRetries.value = String(cloneChatParams(params).antiTruncateMaxRetries);
     if (inputs.dynamicContextByMemory) inputs.dynamicContextByMemory.checked = params.dynamicContextByMemory === true;
@@ -6770,6 +6919,18 @@
     if (inputs.maxTokens) {
       inputs.maxTokens.value = params.maxTokens === null ? '' : String(params.maxTokens);
     }
+  }
+
+  function syncOpacityControl(event) {
+    var input = event.target;
+    if (!input || !/^(qp|cfg)-(bubble|text)-opacity(?:-value)?$/.test(input.id)) return;
+    if (event.type === 'input' && input.value === '') return;
+    var id = input.id.replace(/-value$/, '');
+    var slider = document.getElementById(id);
+    var number = document.getElementById(id + '-value');
+    var value = normalizeChatOpacity(input.value, Number(slider.min));
+    slider.value = value;
+    number.value = value;
   }
 
   function updateDynamicContextInput(inputs) {
@@ -6794,6 +6955,10 @@
       maxTokens: inputs.maxTokens ? inputs.maxTokens.value : '',
       stream: inputs.stream ? inputs.stream.checked !== false : true,
       realTime: inputs.realTime ? inputs.realTime.checked !== false : true,
+      bubbleOpacity: inputs.bubbleOpacity ? inputs.bubbleOpacity.value : 100,
+      textOpacity: inputs.textOpacity ? inputs.textOpacity.value : 100,
+      bubbleOpacityCustomized: !!(inputs.antiTruncateBase && inputs.antiTruncateBase.bubbleOpacityCustomized),
+      textOpacityCustomized: !!(inputs.antiTruncateBase && inputs.antiTruncateBase.textOpacityCustomized),
       // 快捷面板只编辑独立开关，安全阀兼容字段保留，请求时统一取全局值。
       antiTruncateEnabled: inputs.antiTruncateEnabled ? inputs.antiTruncateEnabled.checked : inputs.antiTruncateBase && inputs.antiTruncateBase.antiTruncateEnabled,
       antiTruncateMaxRetries: inputs.antiTruncateMaxRetries ? inputs.antiTruncateMaxRetries.value : inputs.antiTruncateBase && inputs.antiTruncateBase.antiTruncateMaxRetries
@@ -6808,6 +6973,10 @@
       antiTruncateBase: getSessionParams(getCurrentSession()),
       stream: els.qpStream,
       realTime: els.qpRealTime,
+      bubbleOpacity: document.getElementById('qp-bubble-opacity'),
+      bubbleOpacityValue: document.getElementById('qp-bubble-opacity-value'),
+      textOpacity: document.getElementById('qp-text-opacity'),
+      textOpacityValue: document.getElementById('qp-text-opacity-value'),
       antiTruncateEnabled: els.qpAntiTruncate,
       contextLimit: els.qpContextLimit,
       dynamicContextByMemory: els.qpDynamicContext,
@@ -6843,6 +7012,7 @@
     var params = getSessionParams(session);
     fillParamInputs(getQuickParamsInputs(), params);
     refreshQuickParamsButton(session);
+    applyChatAppearance();
   }
 
   /**
@@ -6853,13 +7023,31 @@
     if (!els.quickParamsPanel || !els.quickParamsBtn) return;
     closeQuickModelPanel();
     refreshQuickParamsPanel();
+    // 挂到 body，脱离工具栏的裁切和堆叠上下文，保证高于侧栏。
+    document.body.appendChild(els.quickParamsPanel);
     els.quickParamsPanel.hidden = false;
+    positionQuickParamsPanel();
     els.quickParamsBtn.setAttribute('aria-expanded', 'true');
   }
 
   /**
    * 收起当前对话参数面板
    */
+  function positionQuickParamsPanel() {
+    var panel = els.quickParamsPanel;
+    if (!panel || panel.hidden) return;
+    var viewport = window.visualViewport;
+    var left = viewport ? viewport.offsetLeft : 0;
+    var top = viewport ? viewport.offsetTop : 0;
+    var width = viewport ? viewport.width : window.innerWidth;
+    var height = viewport ? viewport.height : window.innerHeight;
+    var anchor = els.quickParamsBtn.getBoundingClientRect();
+    panel.style.maxHeight = Math.max(80, height - 24) + 'px';
+    var rect = panel.getBoundingClientRect();
+    panel.style.left = Math.max(left + 12, Math.min(anchor.right - rect.width, left + width - rect.width - 12)) + 'px';
+    panel.style.top = Math.max(top + 12, Math.min(anchor.top - rect.height - 8, top + height - rect.height - 12)) + 'px';
+  }
+
   function closeQuickParamsPanel() {
     if (!els.quickParamsPanel || !els.quickParamsBtn) return;
     els.quickParamsPanel.hidden = true;
@@ -6906,16 +7094,21 @@
   /**
    * 面板内任一控件变更：实时写入当前会话的独立 params（无需点击保存）
    */
-  function handleQuickParamsInput() {
+  function handleQuickParamsInput(event) {
+    if (event && event.type === 'input' && event.target.type === 'number' && event.target.value === '' && /-opacity-value$/.test(event.target.id)) return;
     var session = getCurrentSession();
     if (!session) return;
     var inputs = getQuickParamsInputs();
     updateDynamicContextInput(inputs);
     var params = cloneChatParams(readParamInputs(inputs));
     var current = getSessionParams(session);
+    ['bubbleOpacity', 'textOpacity'].forEach(function (key) {
+      if (event && (event.target === inputs[key] || event.target === inputs[key + 'Value'])) params[key + 'Customized'] = true;
+    });
     if (Object.keys(params).every(function (key) { return params[key] === current[key]; })) return;
     saveSessionParams(session, params, undefined, { deferPersist: true });
     refreshQuickParamsButton(session);
+    applyChatAppearance();
   }
 
   /**
@@ -6939,6 +7132,11 @@
   function getChatParamsFormInputs() {
     return {
       stream: els.cfgStream,
+      realTime: document.getElementById('cfg-real-time'),
+      bubbleOpacity: document.getElementById('cfg-bubble-opacity'),
+      bubbleOpacityValue: document.getElementById('cfg-bubble-opacity-value'),
+      textOpacity: document.getElementById('cfg-text-opacity'),
+      textOpacityValue: document.getElementById('cfg-text-opacity-value'),
       antiTruncateEnabled: els.cfgAntiTruncate,
       antiTruncateMaxRetries: els.cfgAntiTruncateRetries,
       contextLimit: els.cfgContextLimit,
@@ -8116,6 +8314,7 @@
 
   function syncStreamingUiState() {
     var busy = updateSendButtonState();
+    refreshSessionGenerationIndicators();
 
     // 只按当前通道禁用重答；其他通道的生成不阻塞此视图。
     if (els.chatArea) {
@@ -10446,6 +10645,7 @@
       return lastResult;
     };
     pendingReplyPolicies.add(key);
+    syncStreamingUiState();
     try {
       if (policy && typeof policy.run === 'function') await policy.run(attempt);
       else await attempt();
@@ -10454,6 +10654,8 @@
     } finally {
       if (pendingReplyRuns.get(key) === run) {
         pendingReplyRuns.delete(key); pendingReplyPolicies.delete(key);
+        if (!run.cancelled && !lastResult.error && !lastResult.aborted && lastResult.msg &&
+            getSession(session.id) === session && currentId !== session.id) completedUnreadSessions.add(session.id);
       }
       syncStreamingUiState();
     }
@@ -12862,6 +13064,17 @@
   /* ================= 事件绑定 ================= */
 
   function bindEvents() {
+    // 捕获阶段先同步滑块和百分比，后续委托读取同一份规范值。
+    document.addEventListener('input', syncOpacityControl, true);
+    document.addEventListener('change', syncOpacityControl, true);
+    window.addEventListener('resize', positionQuickParamsPanel);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', positionQuickParamsPanel);
+      window.visualViewport.addEventListener('scroll', positionQuickParamsPanel);
+    }
+    document.querySelector('label[for="sc-background-file"]').addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); document.getElementById('sc-background-file').click(); }
+    });
     // 密码框「小眼睛」：点击切换明文 / 密文（API Key 与云同步 Token）
     if (els.passwordToggles && els.passwordToggles.length) {
       Array.prototype.forEach.call(els.passwordToggles, function (btn) {
@@ -12985,7 +13198,7 @@
             if (e.type === 'change') handleDynamicContextToggle(e.target).then(function () { handleQuickParamsInput(); });
             return;
           }
-          handleQuickParamsInput();
+          handleQuickParamsInput(e);
         });
       });
       els.quickParamsPanel.addEventListener('click', function (e) {
@@ -13165,6 +13378,38 @@
     }
 
     // ===== 角色与对话设置弹窗 =====
+    document.getElementById('sc-background-url').addEventListener('input', function () {
+      backgroundDraftRevision++;
+      backgroundUploadPending = false;
+      backgroundImageDraft = this.value.trim();
+      refreshBackgroundPreview();
+    });
+    document.getElementById('sc-background-clear').addEventListener('click', function () {
+      backgroundDraftRevision++;
+      backgroundUploadPending = false;
+      backgroundImageDraft = '';
+      document.getElementById('sc-background-url').value = '';
+      document.getElementById('sc-background-file').value = '';
+      refreshBackgroundPreview();
+    });
+    document.getElementById('sc-background-file').addEventListener('change', async function () {
+      var file = this.files && this.files[0];
+      if (!file) return;
+      var revision = ++backgroundDraftRevision;
+      var owner = getSession(charModalSessionId);
+      backgroundUploadPending = true;
+      try {
+        var data = await compressBackgroundFile(file);
+        if (revision !== backgroundDraftRevision || getSession(charModalSessionId) !== owner) return;
+        backgroundImageDraft = data;
+        document.getElementById('sc-background-url').value = '';
+        refreshBackgroundPreview();
+      } catch (error) {
+        if (revision === backgroundDraftRevision) showToast(error.message || '图片处理失败');
+      } finally {
+        if (revision === backgroundDraftRevision) { backgroundUploadPending = false; this.value = ''; }
+      }
+    });
     if (els.sessionCharClose) {
       els.sessionCharClose.addEventListener('click', closeSessionCharModal);
     }

@@ -532,12 +532,11 @@ body {
   display: flex;
   align-items: center;
   gap: 2px;
-  opacity: 0.4;
-  transition: opacity 0.15s ease;
 }
-
-.session-item:hover .session-item-actions,
-.session-item.active .session-item-actions {
+.session-item-actions > button { opacity: 0.4; transition: opacity 0.15s ease; }
+.session-item:hover .session-item-actions > button,
+.session-item.active .session-item-actions > button,
+.session-item-actions > button:focus-visible {
   opacity: 1;
 }
 
@@ -1201,6 +1200,25 @@ body {
   text-overflow: ellipsis;
   user-select: none;
   -webkit-user-select: none;
+}
+
+/* 背景独立于气泡与正文透明度，头像和工具不参与淡化。 */
+#chat-area {
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+#chat-area .msg-user .bubble {
+  background: color-mix(in srgb, var(--user-bg) var(--chat-bubble-opacity, 100%), transparent);
+}
+#chat-area .msg-ai .bubble:not(.bubble-error) {
+  background: color-mix(in srgb, var(--ai-bg) var(--chat-bubble-opacity, 100%), transparent);
+  border-color: color-mix(in srgb, var(--border) var(--chat-bubble-opacity, 100%), transparent);
+}
+#chat-area .bubble > .md-body,
+#chat-area .bubble > .markdown-body,
+#chat-area .bubble > .msg-text {
+  opacity: var(--chat-text-opacity, 1);
 }
 
 /* 气泡通用样式（宽度由 .msg-main 控制） */
@@ -2798,6 +2816,30 @@ body {
 @keyframes ts-dot-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.28; }
+}
+
+/* 紧凑状态位常驻，不随操作按钮的悬停态隐藏。 */
+.session-generation-status { display: inline-flex; flex: 0 0 18px; width: 18px; height: 24px; align-items: center; justify-content: center; color: var(--accent); }
+.session-generation-status.is-running svg { animation: session-generation-spin .85s linear infinite; }
+.session-generation-status.is-completed { color: #24964b; }
+@keyframes session-generation-spin { to { transform: rotate(360deg); } }
+
+.chat-param-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0; font-size: 13px; }
+.chat-opacity-field { margin: 10px 0; min-width: 0; }
+.chat-opacity-field > label { display: block; margin-bottom: 4px; font-size: 12px; color: var(--text-dim); }
+.chat-opacity-controls { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.chat-opacity-controls input[type="range"] { flex: 1 1 0; width: 0; min-width: 0; padding: 0; accent-color: var(--accent); }
+.chat-opacity-controls input[type="number"] { flex: 0 0 56px; width: 56px; min-width: 0; padding: 4px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; }
+.chat-opacity-controls > span { font-size: 12px; color: var(--text-dim); }
+
+/* 直接挂载 body，避免工具轨裁切与父级堆叠上下文。 */
+#quick-params-panel {
+  position: fixed;
+  z-index: 46;
+  width: 250px !important;
+  max-width: calc(100vw - 24px) !important;
+  right: auto !important;
+  bottom: auto !important;
 }
 
 /* 上弹面板 */
@@ -5041,6 +5083,11 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
 }
 
 /* === [ANCHOR: CSS_SESSION_CHAR_MODAL] 角色与对话设置弹窗 === */
+.chat-background-controls { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.chat-background-controls > input[type="url"] { flex: 1; min-width: 0; width: 0; }
+.chat-background-controls > .btn-session-icon { flex: 0 0 28px; width: 28px; height: 28px; cursor: pointer; }
+.chat-background-preview { display: block; width: 100%; max-height: 120px; object-fit: cover; border: 1px solid var(--border); border-radius: 6px; margin-top: 8px; }
+.chat-background-preview[hidden] { display: none; }
 .modal.session-char-modal {
   z-index: 64;
 }
@@ -6769,7 +6816,7 @@ body:not(.dark-mode) .plugin-dialogue-quote { color: #c2410c; }
   .composer-meta > * { flex-shrink: 0; }
   .composer-meta-label { display: inline; }
   .composer-meta .quick-model-picker { max-width: none; }
-  .quick-reply-panel, .quick-params-panel, .quick-model-panel {
+  .quick-reply-panel, .quick-model-panel {
     position: fixed;
     left: 12px !important;
     right: 12px !important;
