@@ -1732,10 +1732,13 @@
     return cloneChatParams(sub.params);
   }
 
+  // 快捷参数连续输入共用防抖计时器，仅延后落盘，不延后内存更新。
+  var quickParamsPersistTimer = null;
+
   /**
    * 只保存目标子对话参数；首个子对话另写独立兼容镜像，不污染其他分区。
    */
-  function saveSessionParams(session, params, targetSubChat) {
+  function saveSessionParams(session, params, targetSubChat, options = {}) {
     if (!session) return;
     var sub = targetSubChat || getActiveSubChat(session);
     if (!sub) return;
@@ -1747,6 +1750,19 @@
     if (session.subChats && session.subChats[0] === sub) session.params = cloneChatParams(params);
     sub.updatedAt = Date.now();
     session.updatedAt = Date.now();
+    if (options.deferPersist) {
+      clearTimeout(quickParamsPersistTimer);
+      quickParamsPersistTimer = setTimeout(function () {
+        quickParamsPersistTimer = null;
+        persistSessions({ skipMemoryReconcile: true });
+        if (!applyingCloudData && !isBooting) {
+          touchLastModified();
+          scheduleCloudUpload();
+        }
+      }, 300);
+      refreshMemoryContext();
+      return;
+    }
     persistSessions();
     refreshMemoryContext();
     if (!applyingCloudData && !isBooting) {
@@ -3221,7 +3237,7 @@
     });
   }
 
-  function persistSessions() {
+  function persistSessions(options = {}) {
     try {
       // 落盘前先把激活子对话的消息同步回去，保证 subChats 与 messages 永远一致
       // 第二个参数传 false：这里只同步数组引用，绝不篡改各历史子对话的 updatedAt
@@ -3233,7 +3249,7 @@
       if (!writeStorageValue(SESSIONS_KEY, serializeSessions())) return false;
       if (!writeStorageValue(CURRENT_ID_KEY, currentId || '')) return false;
       // 所有删楼入口统一在成功落盘后巡检；模块后台保存会再次落盘，用守卫防递归。
-      if (!applyingCloudData && !persistSessions.reconciling && window.MemorySummaryModule) {
+      if (!options.skipMemoryReconcile && !applyingCloudData && !persistSessions.reconciling && window.MemorySummaryModule) {
         persistSessions.reconciling = true;
         try {
           sessions.forEach(function (s) {
@@ -6854,7 +6870,10 @@
     if (!session) return;
     var inputs = getQuickParamsInputs();
     updateDynamicContextInput(inputs);
-    saveSessionParams(session, readParamInputs(inputs));
+    var params = cloneChatParams(readParamInputs(inputs));
+    var current = getSessionParams(session);
+    if (Object.keys(params).every(function (key) { return params[key] === current[key]; })) return;
+    saveSessionParams(session, params, undefined, { deferPersist: true });
     refreshQuickParamsButton(session);
   }
 
