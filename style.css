@@ -238,7 +238,44 @@ body {
   -webkit-overflow-scrolling: touch;
 }
 
-/* === [ANCHOR: CSS_CONFERENCE_ROOM] 会议收录夹与会议配置，复用公共弹窗和开关 === */
+/* === [ANCHOR: CSS_CONFERENCE_ROOM] 会议配置、独立时间线与接力输入区，复用公共弹窗和开关 === */
+.conference-stage[hidden], .conference-stage [hidden] { display: none !important; }
+.main-column.is-conference-view > #chat-area,
+.main-column.is-conference-view > .composer,
+.main-column.is-conference-view #topbar-track { display: none !important; }
+.main-column.is-conference-view > .topbar { min-height: 0; padding-block: 0; border: 0; }
+.conference-stage { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; color: var(--text); }
+.conference-stage-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 20px; border-bottom: 1px solid var(--border); }
+.conference-stage-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
+.conference-stage-members { display: flex; flex: 0 0 100%; gap: 6px; overflow-x: auto; }
+.conference-stage-members .conference-member { flex: 0 0 auto; width: auto; max-width: 180px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 20px; }
+.conference-timeline { flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 20px max(12px, calc((100% - 900px) / 2)); overscroll-behavior: contain; }
+.conference-message { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 24px; min-width: 0; }
+.conference-speaker { display: inline-flex; padding: 0; border: 0; background: transparent; flex: 0 0 28px; cursor: pointer; }
+.conference-message-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.conference-speaker-name { display: block; margin-bottom: 6px; font-size: 12px; color: var(--text-dim); }
+.conference-message .md-body { font-size: 14px; line-height: 1.7; }
+.conference-message .md-body > :first-child { margin-top: 0; }
+.conference-message pre { max-width: 100%; overflow-x: auto; }
+.conference-message img { max-width: 100%; }
+.conference-status { flex-shrink: 0; padding: 8px 16px; font-size: 12px; color: var(--text-dim); border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.conference-status.is-error { color: var(--danger); }
+.conference-status.is-agreed { color: var(--accent); background: var(--bg); font-weight: 600; }
+.conference-composer { flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; padding: 10px 16px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); }
+.conference-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 12px; color: var(--text-dim); }
+.conference-controls label { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.conference-controls input, .conference-controls select { min-width: 0; max-width: 160px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); color: var(--text); font: inherit; }
+.conference-controls input { width: 52px; }
+.conference-input-row { display: flex; align-items: flex-end; gap: 6px; min-width: 0; }
+.conference-input-row textarea { flex: 1; width: 0; min-width: 0; max-height: 180px; resize: vertical; box-sizing: border-box; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; font-size: 14px; }
+.conference-icon:disabled { opacity: .3; cursor: default; }
+.conference-icon.is-ready { color: var(--accent); background: var(--bg); }
+@media (max-width: 480px) {
+  .conference-stage-head { padding: 8px 12px; }
+  .conference-composer { padding-inline: 10px; }
+  .conference-controls { gap: 8px; }
+  .conference-controls select { max-width: 120px; }
+}
 .conference-list-wrap { flex: 0 1 auto; min-height: 36px; max-height: 32vh; overflow-y: auto; overflow-x: hidden; padding: 6px 10px; border-bottom: 1px solid var(--border); }
 .conference-group-head { width: 100%; border: 0; background: transparent; font-family: inherit; text-align: left; }
 .conference-item { min-width: 0; border-radius: 8px; }

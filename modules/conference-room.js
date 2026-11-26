@@ -1,11 +1,15 @@
-/* 多 AI 独立会话会议室：第 1 步仅管理会议与配置，不启动自动接力。 */
+/* 多 AI 独立会话会议室：独立视图、顺序同步与可恢复接力。 */
 (function () {
   'use strict';
   var host = window.MyChat;
   if (!host) return;
 
   var DEFAULT_CONFERENCE_PROMPT = '当前处于多 AI 协作会议室。每条发言前均带有前端内置身份标签，例如 [发言者：用户]、[发言者：对方名称]。请根据标签识别身份，直接与参会者展开讨论，不要替其他参会者发言。\n\n内置双边暂停协议：若你认为讨论已达成结论、进入瓶颈或需要用户拍板，请先写明需要用户确认的事项，并在回复最末尾单独一行输出 [提议暂停确认]。若对方在上一轮已输出 [提议暂停确认]，且你也同意暂停，请先总结待用户拍板的清单，并在回复最末尾单独一行输出 [同意暂停确认]。系统将自动暂停，等待用户指示。';
+  DEFAULT_CONFERENCE_PROMPT += '\n\n参会 AI 在进入会议室前的记忆彼此并不互通。允许并鼓励你在开场或需要时主动询问对方“之前在聊什么 / 当前的目标与背景是什么”，先对齐信息，再展开讨论。';
   var icons = {
+    send: '<path d="m22 2-7 20-4-9-9-4zM22 2 11 13"/>',
+    pause: '<path d="M8 5v14M16 5v14"/>',
+    settings: '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',
     down: '<path d="m6 9 6 6 6-6"/>',
     edit: '<path d="m15 5 4 4M4 20l4-1L20 7a2.1 2.1 0 0 0-3-3L5 16z"/>',
     remove: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
@@ -18,6 +22,247 @@
   var wrap, modal, form, picker, nameInput, promptInput, turnsInput, heading;
   var editingId = null, editingSnapshot = null, selected = new Set(), returnFocus = null;
   var refreshTimer = null;
+  var activeId = null, stage, timeline, statusBar, stageTitle, stageMembers, receiver, relayTurns, draft, sendButton, pauseButton, retryButton;
+  var jobs = new Map(), drafts = new Map();
+
+  function currentRecord(id) { return read().find(function (r) { return valid(r) && r.id === id; }); }
+  function normalize(record) {
+    if (!Array.isArray(record.messages)) record.messages = [];
+    if (!record.syncState || typeof record.syncState !== 'object') record.syncState = {};
+    return record;
+  }
+  function contextKey(session) { return session.id + ':' + (session.activeSubChatId || ''); }
+  function lastUser(session) {
+    var list = session && session.messages || [];
+    for (var i = list.length - 1; i >= 0; i--) if (list[i].role === 'user') return list[i];
+    return null;
+  }
+  function persist(record) {
+    var list = read(), index = list.findIndex(function (r) { return r && r.id === record.id; });
+    if (index < 0) return false;
+    // 配置允许在等待回复时修改，调度器只覆盖自身运行字段。
+    var next = Object.assign({}, list[index]);
+    ['messages', 'syncState', 'pendingRetry', 'proposePause', 'status', 'statusText'].forEach(function (key) { next[key] = record[key]; });
+    next.updatedAt = Date.now();
+    list[index] = next;
+    if (!commit(list)) return false;
+    Object.assign(record, next);
+    renderStage();
+    return true;
+  }
+  function leaveStage() {
+    if (draft && activeId) drafts.set(activeId, draft.value);
+    activeId = null;
+    if (stage) { stage.hidden = true; stage.parentElement.classList.remove('is-conference-view'); }
+  }
+  function jump(id) { leaveStage(); host.selectSession(id); }
+  function showStage(id) {
+    var record = currentRecord(id);
+    if (!record) { notify('会议不存在'); return; }
+    if (draft && activeId) drafts.set(activeId, draft.value);
+    activeId = id;
+    stage.hidden = false;
+    stage.parentElement.classList.add('is-conference-view');
+    draft.value = drafts.get(id) || '';
+    relayTurns.value = record.maxTurns || 4;
+    receiver.dataset.conference = '';
+    renderStage();
+    var mask = document.getElementById('sidebar-mask');
+    if (mask) mask.click();
+  }
+  function ensureStage() {
+    stage = document.getElementById('conference-stage');
+    if (!stage) return;
+    var head = el('header', 'conference-stage-head');
+    stageTitle = el('strong', 'conference-stage-title');
+    stageMembers = el('div', 'conference-stage-members');
+    head.append(stageTitle, button('settings', '会议设置', function () { open(activeId); }), stageMembers);
+    timeline = el('div', 'conference-timeline');
+    timeline.setAttribute('role', 'log');
+    statusBar = el('div', 'conference-status');
+    statusBar.setAttribute('role', 'status');
+    var composer = el('form', 'conference-composer');
+    var controls = el('div', 'conference-controls');
+    receiver = el('select'); receiver.id = 'conference-receiver';
+    var who = el('label', '', '发给谁'); who.appendChild(receiver);
+    relayTurns = el('input'); relayTurns.id = 'conference-relay-turns';
+    relayTurns.type = 'number'; relayTurns.min = '1'; relayTurns.max = '20'; relayTurns.value = '4';
+    var count = el('label', '', '接力轮数'); count.appendChild(relayTurns);
+    controls.append(who, count);
+    draft = el('textarea'); draft.id = 'conference-input'; draft.rows = 2;
+    draft.placeholder = '输入会议消息'; draft.setAttribute('aria-label', '会议消息');
+    var row = el('div', 'conference-input-row');
+    retryButton = button('reset', '恢复会议', function () { void resume(activeId); });
+    retryButton.id = 'conference-resume';
+    sendButton = button('send', '发送', function () { composer.requestSubmit(); }); sendButton.id = 'conference-send';
+    pauseButton = button('pause', '暂停', function () { requestPause(activeId); }); pauseButton.id = 'conference-pause';
+    row.append(draft, retryButton, sendButton, pauseButton);
+    composer.append(controls, row);
+    composer.addEventListener('submit', function (event) { event.preventDefault(); void send(activeId); });
+    draft.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); composer.requestSubmit(); }
+    });
+    stage.append(head, timeline, statusBar, composer);
+  }
+  function renderStage() {
+    if (!activeId || !stage) return;
+    var record = currentRecord(activeId);
+    if (!record) { leaveStage(); return; }
+    normalize(record);
+    stageTitle.textContent = record.title || '未命名会议';
+    stageMembers.replaceChildren();
+    record.participantSessionIds.forEach(function (id) {
+      var session = host.getSessionById(id);
+      if (!session) return;
+      var member = el('button', 'conference-member'); member.type = 'button';
+      member.title = '打开原对话：' + sessionName(session);
+      member.append(badge(session), el('span', 'conference-member-name', sessionName(session)));
+      member.addEventListener('click', function () { jump(id); }); stageMembers.appendChild(member);
+    });
+    var oldValue = receiver.value;
+    receiver.replaceChildren();
+    record.participantSessionIds.forEach(function (id) {
+      var session = host.getSessionById(id);
+      if (session) { var option = el('option', '', sessionName(session)); option.value = id; receiver.appendChild(option); }
+    });
+    if (receiver.dataset.conference === activeId && record.participantSessionIds.includes(oldValue)) receiver.value = oldValue;
+    receiver.dataset.conference = activeId;
+    var previousTop = timeline.scrollTop;
+    var nearBottom = timeline.scrollHeight - previousTop - timeline.clientHeight < 70;
+    timeline.replaceChildren();
+    record.messages.forEach(function (message) {
+      var row = el('article', 'conference-message');
+      var session = message.sessionId && host.getSessionById(message.sessionId);
+      var name = message.role === 'user' ? '用户' : message.name || (session && sessionName(session)) || 'AI';
+      var avatar = el(message.sessionId ? 'button' : 'span', 'conference-speaker');
+      avatar.appendChild(badge(session || { title: name }));
+      if (message.sessionId) { avatar.type = 'button'; avatar.title = '打开原对话：' + name; avatar.addEventListener('click', function () { jump(message.sessionId); }); }
+      var body = el('div', 'conference-message-main'), content = el('div', 'md-body');
+      content.innerHTML = host.renderMarkdown(String(message.content || ''), message.role, session || undefined);
+      body.append(el('strong', 'conference-speaker-name', name), content); row.append(avatar, body); timeline.appendChild(row);
+    });
+    if (!record.messages.length) timeline.appendChild(el('div', 'conference-empty', '开始会议讨论'));
+    timeline.scrollTop = nearBottom ? timeline.scrollHeight : previousTop;
+    statusBar.textContent = record.statusText || '';
+    statusBar.hidden = !record.statusText;
+    statusBar.classList.toggle('is-error', record.status === 'error');
+    statusBar.classList.toggle('is-agreed', record.status === 'agreed');
+    var running = jobs.has(activeId);
+    retryButton.disabled = running || !record.pendingRetry;
+    retryButton.classList.toggle('is-ready', !retryButton.disabled);
+    sendButton.hidden = running; pauseButton.hidden = !running;
+    sendButton.disabled = !!record.pendingRetry;
+    receiver.disabled = relayTurns.disabled = draft.disabled = running;
+  }
+  function identity(message) { return '[发言者：' + (message.role === 'user' ? '用户' : message.name || 'AI') + '] ' + message.content; }
+  function checkpoint(record, targetId, remaining, total, turn) {
+    var session = host.getSessionById(targetId);
+    if (!session) throw new Error('参会对话已删除');
+    var key = contextKey(session), sync = record.syncState[key] || { cursor: 0, prompt: false };
+    var unseen = record.messages.slice(sync.cursor);
+    var parts = unseen.map(identity);
+    if (!sync.prompt) parts.unshift(record.systemPrompt || DEFAULT_CONFERENCE_PROMPT);
+    return { targetSessionId: targetId, remainingTurns: remaining, totalTurns: total, turn: turn,
+      mode: 'send', text: parts.join('\n'), syncKey: key, cursor: record.messages.length,
+      subChatId: session.activeSubChatId || '', userId: null, userContent: null };
+  }
+  function requestPause(id) {
+    var job = jobs.get(id); if (!job) return;
+    job.stop = true;
+    var record = job.record;
+    record.status = 'pausing'; record.statusText = '已请求暂停，当前轮结束后停止';
+    persist(record); notify('已请求暂停');
+  }
+  async function send(id) {
+    if (jobs.has(id)) return;
+    var record = currentRecord(id), text = draft.value.trim(), turns = Number(relayTurns.value);
+    if (!record || !text) return;
+    normalize(record);
+    if (record.pendingRetry) { notify('请先恢复会议'); return; }
+    if (!Number.isInteger(turns) || turns < 1 || turns > 20) { notify('轮数范围为 1～20'); return; }
+    var target = receiver.value;
+    if (record.participantSessionIds.filter(function (sid) { return !!host.getSessionById(sid); }).length < 2) { notify('至少需要 2 个 AI'); return; }
+    record.messages.push({ role: 'user', name: '用户', content: text, createdAt: Date.now() });
+    record.proposePause = false;
+    try { record.pendingRetry = checkpoint(record, target, turns, turns, 1); }
+    catch (err) { notify(err.message); return; }
+    record.status = 'ready'; record.statusText = '';
+    if (!persist(record)) return;
+    draft.value = ''; drafts.set(id, '');
+    await execute(record);
+  }
+  async function resume(id) {
+    if (jobs.has(id)) return;
+    var record = currentRecord(id);
+    if (!record || !record.pendingRetry) return;
+    normalize(record);
+    await execute(record);
+  }
+  async function execute(record) {
+    var job = { stop: false, record: record }; jobs.set(record.id, job);
+    try {
+      while (record.pendingRetry && jobs.get(record.id) === job) {
+        var pending = record.pendingRetry, session = host.getSessionById(pending.targetSessionId);
+        if (!session || (session.activeSubChatId || '') !== pending.subChatId) throw new Error('原对话分区已变更，请切回后恢复');
+        if (pending.mode === 'retry') {
+          var user = lastUser(session);
+          if (!user || user.id !== pending.userId || user.content !== pending.userContent) throw new Error('原对话已更新，无法安全重试');
+        }
+        record.status = 'running';
+        record.statusText = '正在等待 ' + sessionName(session) + ' 回复…（第 ' + pending.turn + '/' + pending.totalTurns + ' 轮）';
+        if (!persist(record)) return;
+        var promise;
+        if (pending.mode === 'retry') promise = host.retryLastInSessionAndWait(pending.targetSessionId);
+        else {
+          var previous = lastUser(session);
+          promise = host.sendToSessionAndWait(pending.targetSessionId, pending.text);
+          // 等待式桥同步追加 user；先固化重试身份，刷新页面也不会重复发送。
+          var appended = lastUser(session);
+          if (appended && appended !== previous) {
+            pending.mode = 'retry'; pending.userId = appended.id; pending.userContent = appended.content;
+            record.syncState[pending.syncKey] = { cursor: pending.cursor, prompt: true };
+          }
+        }
+        var checkpointSaved = persist(record);
+        var result = await promise;
+        if (jobs.get(record.id) !== job || !currentRecord(record.id)) return;
+        if (!checkpointSaved) throw new Error('存储失败，请恢复会议');
+        if (!result || result.error || result.aborted || !String(result.content || '').trim()) {
+          var reason = result && result.error;
+          throw new Error(reason === 'CHANNEL_BUSY' ? '参会对话正在生成，请稍后恢复' : result && result.aborted ? '回复已中断，可恢复会议' : '回复失败，可恢复会议' + (reason ? '：' + String(reason).slice(0, 160) : ''));
+        }
+        record.messages.push({ role: 'assistant', sessionId: session.id, name: sessionName(session), content: result.content, createdAt: Date.now() });
+        // 自己生成的回复已在原对话中，不应在下一棒再回灌自身。
+        record.syncState[pending.syncKey] = { cursor: record.messages.length, prompt: true };
+        var agreed = record.proposePause === true && /\[同意暂停确认\]\s*$/.test(result.content);
+        record.proposePause = !agreed && /\[提议暂停确认\]\s*$/.test(result.content);
+        var remaining = pending.remainingTurns - 1;
+        record.pendingRetry = null;
+        if (!agreed && remaining > 0) {
+          var participants = record.participantSessionIds;
+          var nextId = participants[(participants.indexOf(session.id) + 1) % participants.length];
+          record.pendingRetry = checkpoint(record, nextId, remaining, pending.totalTurns, pending.turn + 1);
+        }
+        if (agreed) {
+          record.status = 'agreed'; record.statusText = '双方已达成一致并暂停，请确认上述事项后继续指示';
+          notify(record.statusText);
+        } else if (job.stop) {
+          record.status = 'paused'; record.statusText = '会议已暂停';
+        } else if (!record.pendingRetry) {
+          record.status = 'done'; record.statusText = '本次接力已完成';
+        }
+        if (!persist(record) || agreed || job.stop) break;
+      }
+    } catch (err) {
+      if (jobs.get(record.id) === job) {
+        record.status = 'error'; record.statusText = err.message || '会议中断，可恢复会议';
+        persist(record); notify(record.statusText);
+      }
+    } finally {
+      if (jobs.get(record.id) === job) jobs.delete(record.id);
+      renderStage();
+    }
+  }
 
   function svg(name) {
     return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + icons[name] + '</svg>';
@@ -62,10 +307,19 @@
     return true;
   }
   function reloadFromStorage() {
+    jobs.clear();
     records = read();
+    var interrupted = false;
+    records.forEach(function (record) {
+      if (valid(record) && record.pendingRetry && (record.status === 'running' || record.status === 'pausing')) {
+        record.status = 'error'; record.statusText = '会议已中断，可恢复会议'; interrupted = true;
+      }
+    });
+    if (interrupted && !host.saveConferences(records)) notify('保存失败，请重试');
     // 云恢复和事务回滚都会使编辑基线失效，禁止旧草稿覆盖恢复结果。
     if (modal && !modal.hidden) close();
     render();
+    renderStage();
   }
   async function removeRecord(id) {
     var original = read().find(function (item) { return item && item.id === id; });
@@ -78,6 +332,8 @@
     if (!live || JSON.stringify(live) !== snapshot) { notify('会议已更新，请重试'); return; }
     if (commit(current.filter(function (item) { return !item || item.id !== id; }))) {
       expanded.delete(id);
+      jobs.delete(id);
+      if (activeId === id) leaveStage();
       if (editingId === id && modal && !modal.hidden) close();
       notify('已删除会议');
     }
@@ -104,7 +360,7 @@
       var title = el('button', 'conference-title', record.title || '未命名会议');
       title.type = 'button';
       title.title = record.title || '编辑会议';
-      title.addEventListener('click', function () { open(record.id); });
+      title.addEventListener('click', function () { showStage(record.id); });
       var down = button('down', '展开参会 AI', function () {
         if (expanded.has(record.id)) expanded.delete(record.id); else expanded.add(record.id);
         render();
@@ -125,7 +381,7 @@
           member.type = 'button';
           member.title = '打开原对话：' + sessionName(session);
           member.append(badge(session), el('span', 'conference-member-name', sessionName(session)));
-          member.addEventListener('click', function () { host.selectSession(id); });
+          member.addEventListener('click', function () { jump(id); });
           members.appendChild(member);
         });
         item.appendChild(members);
@@ -264,12 +520,20 @@
       messages: [], pendingRetry: null, createdAt: now
     }, { title: title, participantSessionIds: ids, systemPrompt: promptInput.value, maxTurns: turns, updatedAt: now });
     if (old) current[current.indexOf(old)] = record; else current.unshift(record);
-    if (commit(current)) { close(); notify(old ? '会议已更新' : '会议已创建'); }
+    if (commit(current)) {
+      close();
+      if (activeId === record.id && !jobs.has(record.id)) relayTurns.value = turns;
+      renderStage(); notify(old ? '会议已更新' : '会议已创建');
+    }
   }
   function init() {
     wrap = document.getElementById('conference-list-wrap');
     var entry = document.getElementById('btn-new-conference');
     if (!wrap || !entry) return;
+    ensureStage();
+    window.addEventListener('mychat-session-selected', leaveStage);
+    var sessionList = document.getElementById('session-list');
+    if (sessionList) sessionList.addEventListener('click', function (event) { if (event.target.closest('.session-item')) leaveStage(); }, true);
     entry.addEventListener('click', function () { open(); });
     reloadFromStorage();
     window.addEventListener('mychat-context-changed', function () {
@@ -277,7 +541,7 @@
       refreshTimer = setTimeout(function () { render(); }, 120);
     });
   }
-  window.MyChatConference = { open: open, reloadFromStorage: reloadFromStorage, DEFAULT_CONFERENCE_PROMPT: DEFAULT_CONFERENCE_PROMPT };
+  window.MyChatConference = { open: open, show: showStage, reloadFromStorage: reloadFromStorage, DEFAULT_CONFERENCE_PROMPT: DEFAULT_CONFERENCE_PROMPT };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });
   else init();
 })();

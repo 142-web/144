@@ -1308,6 +1308,8 @@
     },
     // 全局轻提示（模块内统一使用）
     showToast: showToast,
+    // 会议时间线复用宿主 Markdown 与离线降级，不复制解析器。
+    renderMarkdown: renderMarkdown,
 
     /* ---------- 供 modules/memory-summary.js 使用的运行时接口 ---------- */
 
@@ -3498,6 +3500,8 @@
    * 切换到指定会话：重绘消息区并滚动到底部
    */
   function selectSession(id) {
+    if (!getSession(id)) return;
+    window.dispatchEvent(new CustomEvent('mychat-session-selected', { detail: { sessionId: id } }));
     if (id === currentId) {
       refreshMemoryContext();
       closeSidebar();
