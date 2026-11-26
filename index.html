@@ -4,6 +4,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <!-- 报错采集基础设施：先于外部依赖与全部业务脚本加载 -->
+  <script src="modules/error-console.js?v=20261126_1"></script>
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
@@ -14,7 +16,7 @@
   <title>MyChat</title>
   <!-- 代码高亮深色主题（hljs 官方 atom-one-dark 配色，国内高速镜像） -->
   <link rel="stylesheet" href="https://cdn.staticfile.net/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
-  <link rel="stylesheet" href="style.css?v=20261126_3" />
+  <link rel="stylesheet" href="style.css?v=20261126_5" />
 </head>
 
 <body>
@@ -251,6 +253,10 @@
                   <path d="M16.8 16.8H20" />
                 </svg>
                 <span id="toolbox-regex-label">正则脚本</span>
+              </button>
+              <button type="button" class="toolbox-item" id="toolbox-error-console-btn" data-tool="error-console" role="menuitem" title="报错日志">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3m6 0h4"/></svg>
+                <span>报错日志</span><span id="error-console-unread" class="error-console-unread" hidden></span>
               </button>
               <button type="button" class="toolbox-item" id="toolbox-plugins-btn" data-tool="plugins" role="menuitem" title="插件库">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3H4v6a3 3 0 1 1 0 6v6h6a3 3 0 1 1 6 0h5v-6a3 3 0 1 1 0-6V3h-6a3 3 0 1 1-6 0Z"/></svg>
