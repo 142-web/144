@@ -2089,8 +2089,9 @@
       '      <div class="ms-actions"><span>区间执行</span>' + actionIcon('按间隔分轮总结该区间', 'M4 5h5v5H4zM15 14h5v5h-5zM9 7h8v7', 'ms-batch-range') + actionIcon('单次合并总结该区间', 'M5 5h14v14H5zM9 9l6 3-6 3z', 'ms-range-once') + actionIcon('停止批量总结', 'M6 6h12v12H6z', 'ms-batch-stop') + '</div>',
       '    </details>',
       '    <div class="ms-settings">',
-      '      <div class="ms-inline"><label for="ms-memory-mode">记忆模式</label><select id="ms-memory-mode"><option value="rp">叙事 RP 模式</option><option value="engineering">工程生产力模式</option></select></div>',
-      '      <label class="ms-switch"><input id="ms-auto" type="checkbox" /><span>启用自动总结</span></label>',
+      '      <div class="ms-inline"><label for="ms-memory-mode">记忆模式</label><select id="ms-memory-mode"><option value="rp">叙事 RP 模式</option><option value="engineering">工程生产力模式</option><option value="general">日常通用模式</option></select></div>',
+      '      <label class="ms-switch" id="ms-auto-original"><input id="ms-auto" type="checkbox" /><span>启用自动总结</span></label>',
+      '      <div class="ms-inline" id="ms-general-auto" hidden><span>自动总结</span><label class="ui-switch ui-switch-sm" title="自动总结"><span class="ui-switch-track"></span></label></div>',
       '      <label class="ms-switch"><input id="ms-recall" type="checkbox" /><span>启用发送前智能检索</span></label>',
       '      <div class="ms-inline">',
       '        <label for="ms-interval">每隔 N 楼自动总结</label>',
@@ -2139,6 +2140,7 @@
       ensureMemoryStateSynced(data, mode);
       getMeta(session);
       saveSession(session);
+      refreshTokenMeter();
       renderConsoleIfOpen();
     });
     consoleEls.auto = modal.querySelector('#ms-auto');
@@ -2364,10 +2366,109 @@
       (id ? ' id="' + id + '"' : '') + '><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="' + path + '"/></svg></button>';
   }
 
+  // 通用条目只走既有会话保存与公共弹窗，不创建额外存储或注入链路。
+  function renderGeneralOverview(session, data, owner, pane) {
+    var state = data.memoryState;
+    pane.innerHTML = '<div class="ms-general-head"><span class="ms-pane-hint">已总结至第 ' +
+      data.summarizedFloorCursor + ' 楼 · 共 ' + state.generalItems.length + ' 条记忆</span>' +
+      actionIcon('清空记忆', 'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7', 'ms-memory-reset') + '</div>';
+
+    function isCurrent() {
+      return bridge.getCurrentSession() === session && memoryOwner(session) === owner &&
+        owner.memoryData === data && data.memoryState.mode === 'general';
+    }
+    function commit(change, message) {
+      if (!isCurrent()) return;
+      var previous = deepCopy(data.memoryState);
+      change(data.memoryState);
+      if (!saveSession(session)) {
+        data.memoryState = previous;
+        ensureMemoryStateSynced(data, 'general');
+        notify('保存失败，请重试');
+      } else notify(message);
+      refreshTokenMeter();
+      renderConsoleIfOpen();
+    }
+    GENERAL_CATEGORIES.forEach(function (category, index) {
+      var section = document.createElement('section');
+      section.className = 'ms-general-section';
+      section.setAttribute('data-category', category);
+      var items = state.generalItems.filter(function (item) { return item.category === category; });
+      section.innerHTML = '<div class="ms-general-head"><h3>' + GENERAL_CATEGORY_TITLES[index] +
+        '</h3><span class="ms-general-count">' + items.length + '</span>' +
+        actionIcon('新增记忆', 'M12 5v14M5 12h14', '') + '</div>';
+      section.querySelector('button').addEventListener('click', async function () {
+        if (!isCurrent()) return;
+        var content = await window.showAppPrompt({title:'新增记忆', message:'记忆内容', placeholder:'输入记忆内容'});
+        if (content === null || !isCurrent()) return;
+        content = content.trim();
+        if (!content) { notify('内容不能为空'); return; }
+        commit(function (current) {
+          current.generalItems.push({id:'M' + current.generalNextId++, category:category, content:content, updatedAt:Date.now()});
+        }, '记忆已新增');
+      });
+      if (!items.length) section.insertAdjacentHTML('beforeend', '<p class="ms-general-empty">暂无条目</p>');
+      items.forEach(function (item) {
+        item = Object.assign({}, item);
+        var card = document.createElement('div');
+        card.className = 'ms-general-card';
+        card.innerHTML = '<span class="ms-evt-id">' + escapeHtml(item.id) + '</span><div class="ms-general-content">' +
+          escapeHtml(item.content) + '</div><div class="ms-general-actions">' +
+          actionIcon('编辑记忆', 'M12 20h9M16 3l5 5M4 16 16 4l4 4L8 20H4z', '') +
+          actionIcon('删除记忆', 'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7', '') + '</div>';
+        // 按 ID 重取条目，并拒绝覆盖等待期间的新总结或其他编辑。
+        function unchanged() {
+          if (!isCurrent()) return false;
+          return data.memoryState.generalItems.some(function (current) {
+            return current.id === item.id && current.content === item.content && current.updatedAt === item.updatedAt;
+          });
+        }
+        var buttons = card.querySelectorAll('button');
+        buttons[0].addEventListener('click', async function () {
+          if (!unchanged()) return;
+          var content = await window.showAppPrompt({title:'编辑记忆', message:'记忆内容', defaultValue:item.content});
+          if (content === null || !unchanged()) return;
+          content = content.trim();
+          if (!content) { notify('内容不能为空'); return; }
+          commit(function (current) {
+            var target = current.generalItems.find(function (entry) { return entry.id === item.id; });
+            target.content = content;
+            target.updatedAt = Date.now();
+          }, '记忆已保存');
+        });
+        buttons[1].addEventListener('click', async function () {
+          if (!unchanged()) return;
+          if (!await window.showAppConfirm({title:'删除记忆', message:'删除此条记忆？', danger:true}) || !unchanged()) return;
+          commit(function (current) {
+            current.generalItems = current.generalItems.filter(function (entry) { return entry.id !== item.id; });
+          }, '记忆已删除');
+        });
+        section.appendChild(card);
+      });
+      pane.appendChild(section);
+    });
+    pane.querySelector('#ms-memory-reset').addEventListener('click', async function () {
+      if (!isCurrent() || !await window.showAppConfirm({title:'清空记忆', message:'清空当前分支记忆？', danger:true}) || !isCurrent()) return;
+      var restored = createMemoryData('general');
+      restored.enabled = data.enabled;
+      restored.overviewEnabled = data.overviewEnabled;
+      restored.overviewEntry.enabled = data.overviewEnabled;
+      owner.memoryData = restored;
+      if (!saveSession(session)) { owner.memoryData = data; notify('保存失败，请重试'); }
+      else notify('记忆已清空');
+      refreshTokenMeter();
+      renderConsoleIfOpen();
+    });
+  }
+
   function renderOverviewPane(session) {
     var data = getMemoryData(session);
     var owner = memoryOwner(session);
     var pane = consoleEls.paneOverview;
+    if (data.memoryState.mode === 'general') {
+      renderGeneralOverview(session, data, owner, pane);
+      return;
+    }
     pane.innerHTML = '<details open><summary>' + OVERVIEW_TITLE + '</summary><label class="ms-switch"><input id="ms-overview-enabled" type="checkbox"><span>启用</span></label>' +
       '<textarea class="ms-textarea" id="ms-overview-text" spellcheck="false"></textarea><div class="ms-pane-foot">' +
       actionIcon('保存', 'M20 6 9 17l-5-5', 'ms-overview-save') +
@@ -2466,35 +2567,38 @@
 
   function renderPromptsPane(session) {
     if (!consoleEls.panePrompts) return;
-    var meta = getMeta(session);
+    var owner = memoryOwner(session), meta = getMeta(session), mode = meta.memoryMode;
+    var general = mode === 'general';
     consoleEls.panePrompts.innerHTML = [
       '<div class="ms-field-label">增量总结提示词</div>',
       '<textarea class="ms-textarea ms-textarea-tall" id="ms-prompt-summary" spellcheck="false"></textarea>',
       '<div class="ms-pane-foot">',
       actionIcon('恢复默认', 'M3 11a9 9 0 1 1 3 7M3 4v7h7', 'ms-prompt-summary-reset'),
+      general ? actionIcon('保存提示词', 'M20 6 9 17l-5-5', 'ms-prompts-save') : '',
       '</div>',
+      general ? '' : [
       '<div class="ms-field-label">小 AI 编号检索提示词</div>',
       '<textarea class="ms-textarea ms-textarea-tall" id="ms-prompt-recall" spellcheck="false"></textarea>',
       '<div class="ms-pane-foot">',
       actionIcon('恢复默认', 'M3 11a9 9 0 1 1 3 7M3 4v7h7', 'ms-prompt-recall-reset'),
       actionIcon('保存提示词', 'M20 6 9 17l-5-5', 'ms-prompts-save'),
-      '</div>'
+      '</div>'].join('')
     ].join('');
 
     var taS = consoleEls.panePrompts.querySelector('#ms-prompt-summary');
     var taR = consoleEls.panePrompts.querySelector('#ms-prompt-recall');
     taS.value = meta.summarizePrompt;
-    taR.value = meta.recallPrompt;
+    if (taR) taR.value = meta.recallPrompt;
 
     consoleEls.panePrompts.querySelector('#ms-prompt-summary-reset').addEventListener('click', function () {
       taS.value = getModePrompts(meta.memoryMode).summarizePrompt;
     });
-    consoleEls.panePrompts.querySelector('#ms-prompt-recall-reset').addEventListener('click', function () {
+    if (taR) consoleEls.panePrompts.querySelector('#ms-prompt-recall-reset').addEventListener('click', function () {
       taR.value = getModePrompts(meta.memoryMode).recallPrompt;
     });
     consoleEls.panePrompts.querySelector('#ms-prompts-save').addEventListener('click', function () {
       var sessionNow = bridge.getCurrentSession ? bridge.getCurrentSession() : null;
-      if (!sessionNow || sessionNow !== session || getMeta(sessionNow).memoryMode !== meta.memoryMode) return;
+      if (!sessionNow || sessionNow !== session || memoryOwner(sessionNow) !== owner || getMeta(sessionNow).memoryMode !== mode) return;
       var m = getMeta(sessionNow), defaults = getModePrompts(m.memoryMode);
       // textarea 会将 CRLF 规范化为 LF；恢复默认时保留常量原文。
       function savedPrompt(value, fallback) {
@@ -2502,7 +2606,7 @@
       }
       m.customPrompts[m.memoryMode] = {
         summarizePrompt:savedPrompt(taS.value, defaults.summarizePrompt),
-        recallPrompt:savedPrompt(taR.value, defaults.recallPrompt)
+        recallPrompt:taR ? savedPrompt(taR.value, defaults.recallPrompt) : ''
       };
       getMeta(sessionNow);
       saveSession(sessionNow);
@@ -2515,6 +2619,29 @@
     var session = bridge.getCurrentSession ? bridge.getCurrentSession() : null;
     if (!session) return;
     var meta = getMeta(session);
+    var general = meta.memoryMode === 'general', modal = consoleEls.modal;
+    // 同一 input 在两种布局间移动，保留监听器；原两模式恢复原复选框排版。
+    var originalAuto = modal.querySelector('#ms-auto-original');
+    var generalAuto = modal.querySelector('#ms-general-auto');
+    var autoHost = general ? generalAuto.querySelector('.ui-switch') : originalAuto;
+    if (consoleEls.auto.parentNode !== autoHost) autoHost.insertBefore(consoleEls.auto, autoHost.firstChild);
+    consoleEls.auto.setAttribute('aria-label', '自动总结');
+    originalAuto.hidden = general;
+    generalAuto.hidden = !general;
+    [consoleEls.recall.closest('label'), consoleEls.maxRecall.closest('.ms-inline'),
+      consoleEls.recentEvents.closest('.ms-inline'), consoleEls.recallRetry.closest('.ms-inline'),
+      modal.querySelector('#ms-recent-events-hint'), modal.querySelector('#ms-test-recall'),
+      modal.querySelector('.ms-batch-panel')].forEach(function (element) { element.hidden = general; });
+    modal.querySelector('label[for="ms-target"]').textContent = general ? '总结模型' : '总结 / 检索使用的模型';
+    consoleEls.tabs.querySelector('[data-tab="overview"]').textContent = general ? '记忆条目' : '常驻总纲';
+    consoleEls.tabs.querySelector('[data-tab="events"]').hidden = general;
+    if (general && activeTab === 'events') activeTab = 'overview';
+    Array.prototype.forEach.call(consoleEls.tabs.querySelectorAll('.ms-tab'), function (tab) {
+      tab.classList.toggle('active', tab.getAttribute('data-tab') === activeTab);
+    });
+    consoleEls.paneOverview.hidden = activeTab !== 'overview';
+    consoleEls.paneEvents.hidden = activeTab !== 'events';
+    consoleEls.panePrompts.hidden = activeTab !== 'prompts';
     renderDash(session);
     consoleEls.mode.value = meta.memoryMode;
     consoleEls.auto.checked = meta.autoSummary;
