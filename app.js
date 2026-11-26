@@ -10721,6 +10721,42 @@
     return compact.length < 300 && /(我无法|不能满足|无法满足|抱歉，我不能|对不起，我不能|作为(一个)?人工智能|作为\s*AI|违反.*?(政策|准则|规定|伦理)|涉及.*?(敏感|不当|色情|暴力)|I cannot|I can't|I'm sorry|I am sorry|As an AI|against my (safety|ethical|content) (guidelines|policies))/i.test(String(text || ''));
   }
 
+  // 仅供 4.0 通道 2 使用：前置标签思考不参与哨兵匹配，未闭合思考继续等待。
+  function stripMemoryV4LeadingThinking(rawContent) {
+    var text = String(rawContent || '');
+    var leading = /^\s*<(thinking|thought|think|expert_thinking)\b[^>]*>/i;
+    var match;
+    while ((match = text.match(leading))) {
+      var end = new RegExp('</' + match[1] + '\\s*>', 'i').exec(text.slice(match[0].length));
+      if (!end) return '';
+      text = text.slice(match[0].length + end.index + end[0].length);
+    }
+    return text;
+  }
+
+  function extractMemoryV4RecallIds(rawContent) {
+    var text = stripMemoryV4LeadingThinking(rawContent);
+    var ids = [], match;
+    var pattern = /<recall\s+ids=["']([^"']+)["']\s*\/?>/gi;
+    while ((match = pattern.exec(text))) {
+      match[1].split(/[,，\s]+/).forEach(function (id) {
+        if (id && ids.indexOf(id) === -1) ids.push(id);
+      });
+    }
+    return ids;
+  }
+
+  function isMemoryV4RecallStreamingPrefix(rawContent) {
+    return /^<recall/i.test(stripMemoryV4LeadingThinking(rawContent).trim());
+  }
+
+  function stripMemoryV4RecallTags(rawContent) {
+    return String(rawContent || '').replace(/<recall\b[^>]*\/?>\s*(?:<\/recall\s*>)?/gi, '')
+      .replace(/<\/recall\s*>/gi, '')
+      // 同时遮住分块传来的半截标签，避免二次请求期间闪现 XML。
+      .replace(/<\/?(?:r(?:e(?:c(?:a(?:l(?:l\b[^>]*)?)?)?)?)?)?$/i, '');
+  }
+
   async function requestAssistantAttempt(session, options) {
     var opts = options && typeof options === 'object' ? options : {};
     var targetSession = session;
@@ -10810,7 +10846,12 @@
         .replace(/<chat_title>[\s\S]*$/, '')
         .replace(/<(?:c|ch|cha|chat|chat_|chat_t|chat_ti|chat_tit|chat_titl|chat_title)?$/, '');
     };
+    var v4RecallDepth = 0;
+    var v4ExtraRecallIds = [];
     var assembled = assembleRequestContext(session, targetMessages, params, cutoffUserIndex, summarizedFloorCursor, preparedPreset, retrievalTriggers, retrievalBookId, targetSubChatId, autoTitleTarget, {extraRecallIds:opts.extraRecallIds, forbidFurtherRecall:opts.forbidFurtherRecall});
+    // 以冻结子对话实际注入结果为启用凭证，普通对话和旧模式绝不进入拦截器。
+    var v4RecallEnabled = !!assembled.memoryV4 && !!window.MyChatMemorySummary &&
+      window.MyChatMemorySummary.isV4Mode(assembled.memoryV4.memoryMode);
     var requestMessages = assembled.apiMessages;
     var prefillPrefix = assembled.prefillPrefix;
     var triggeredEntryNames = assembled.triggeredEntryNames;
@@ -10938,6 +10979,30 @@
     var lastFinishReason = null;
     var reasoning = '';
     var tagReasoning = '';
+    var showV4RecallWait = function (ids) {
+      task.waitText = '正在翻阅历史档案' + (ids.length ? ' [' + ids.join(', ') + ']' : '') + '...';
+      task.latestRender = {content:task.waitText};
+      // 覆盖已排队的流式帧；提示只存在于任务，不写入消息或存储。
+      bubble._latestRender = task.latestRender;
+      if (isCurrentSession(targetSession, targetSubChatId) && task.isViewingTarget() && bubble.isConnected) {
+        ensureBubbleParts(bubble);
+        bubble._nativeCot.style.display = 'none';
+        bubble._tagCot.style.display = 'none';
+        bubble._mdBody.style.display = '';
+        bubble._mdBody._lastHtml = null;
+        bubble._mdBody.textContent = task.waitText;
+      }
+    };
+    var shouldHoldV4Recall = function (text) {
+      if (!v4RecallEnabled || v4RecallDepth !== 0) return false;
+      var body = stripMemoryV4LeadingThinking(text).trim();
+      var ids = extractMemoryV4RecallIds(text);
+      var hold = !body || /^<(?:r(?:e(?:c(?:a(?:l)?)?)?)?)?$/i.test(body) ||
+        isMemoryV4RecallStreamingPrefix(text) || ids.length > 0;
+      if (hold && (ids.length || isMemoryV4RecallStreamingPrefix(text))) showV4RecallWait(ids);
+      return hold;
+    };
+    var cleanV4Recall = function (text) { return v4RecallEnabled ? stripMemoryV4RecallTags(text) : text; };
 
     // 非流式读秒计时器（收到响应或报错后必须清除）
     var nonStreamTimer = null;
@@ -11016,7 +11081,7 @@
           if (traceId) debug.finish(traceId, {status:'error',response:{httpStatus:400,errorMsg:'接口不支持 stream_options，已重试'}});
           var wireBody = JSON.parse(bodyText);
           traceId = debug.start({category:'main_chat',title:'主对话请求',sessionId:session.id,sessionTitle:session.title || '',subChatId:targetSubChatId,
-            inspectorMeta:Object.assign(debug.mainMeta(assembled), assembled.memoryV4 ? {memoryV4:assembled.memoryV4} : {}),request:Object.assign(debug.request({provider:activeProvider,model:activeModel},wireBody.messages,params.maxTokens,params.temperature),{body:wireBody})});
+            inspectorMeta:Object.assign(debug.mainMeta(assembled), assembled.memoryV4 ? {memoryV4:Object.assign({}, assembled.memoryV4, {channel2RecallIds:v4ExtraRecallIds.slice(), recallDepth:v4RecallDepth})} : {}),request:Object.assign(debug.request({provider:activeProvider,model:activeModel},wireBody.messages,params.maxTokens,params.temperature),{body:wireBody})});
         }
         return (window.MyChatProviders ? window.MyChatProviders.fetch.bind(null, activeProvider) : fetch)(endpoint, {
           method: 'POST',
@@ -11121,8 +11186,10 @@
 
         bubble.classList.remove('streaming');
 
+        if (!shouldHoldV4Recall(answer)) {
+        task.waitText = '';
         // 非流式整体返回时同步写入会话数据（按保留设置回显预输入）
-        var fullParsed = setAssistantResponse(responseMsg, stripAntiTruncateTag(stripChatTitle(answer)), reasoning);
+        var fullParsed = setAssistantResponse(responseMsg, cleanV4Recall(stripAntiTruncateTag(stripChatTitle(answer))), reasoning);
         if (!fullParsed.inThink) responseMsg.content = withPrefill(responseMsg.content);
         session.updatedAt = Date.now();
         syncResponseView();
@@ -11134,6 +11201,7 @@
         if (isCurrentSession(targetSession, targetSubChatId) && task.isViewingTarget() && bubble.isConnected) {
           renderAssistantBubble(bubble, task.latestRender, false);
         }
+        }
       } else {
         // 9. 标准 SSE 流式解析（ReadableStream + TextDecoder）
         // 若本意是非流式但服务端仍返回 SSE，必须先停掉读秒提示，避免覆盖正文
@@ -11141,7 +11209,7 @@
           clearInterval(nonStreamTimer);
           nonStreamTimer = null;
         }
-        if (task.isViewingTarget() && bubble._mdBody && retryCount === 0) {
+        if (task.isViewingTarget() && bubble._mdBody && retryCount === 0 && !task.waitText) {
           bubble._mdBody._lastHtml = '';
           bubble._mdBody.textContent = '';
         }
@@ -11214,9 +11282,12 @@
               answer = accumulatedRawText = roundBase + roundText;
             }
 
+            if (shouldHoldV4Recall(answer)) return false;
+            if (v4RecallEnabled && v4RecallDepth > 0 && task.waitText && !cleanV4Recall(stripMemoryV4LeadingThinking(answer)).trim()) return false;
+            task.waitText = '';
             // 关键：流式进行中就把最新内容与时间戳同步写入 localStorage
             // 勾选保留预输入时，气泡开头立刻显示预输入文本，后续内容在其后逐字追加
-            var streamParsed = setAssistantResponse(responseMsg, stripAntiTruncateTag(stripChatTitle(answer)), reasoning);
+            var streamParsed = setAssistantResponse(responseMsg, cleanV4Recall(stripAntiTruncateTag(stripChatTitle(answer))), reasoning);
             if (!streamParsed.inThink) responseMsg.content = withPrefill(responseMsg.content);
             session.updatedAt = Date.now();
             syncResponseView();
@@ -11273,6 +11344,45 @@
           throw new Error('接口未返回任何文本内容，请检查【设置】中的模型名称是否正确。');
         }
       }
+      // 通道 2 优先于续写与起名：丢弃中间回复，在同一锁、气泡和 signal 上只钻取一次。
+      var v4RequestedIds = v4RecallEnabled && v4RecallDepth === 0 ? extractMemoryV4RecallIds(answer) : [];
+      if (v4RequestedIds.length && !roundError && !task.controller.signal.aborted) {
+        showV4RecallWait(v4RequestedIds);
+        v4RecallDepth = 1;
+        v4ExtraRecallIds = v4RequestedIds;
+        // 通道 2 补全始终流式输出；只改变本次 V4 任务，不回写用户参数。
+        isStreamMode = task.isStreamMode = true;
+        if (debug && traceId) {
+          debug.finish(traceId, {status:'success', inspectorMeta:{memoryV4:Object.assign({}, assembled.memoryV4, {channel2RecallIds:v4ExtraRecallIds.slice(), recallDepth:0})},
+            response:{rawText:answer, wireText:debugRawText, parsedData:debugParsed || {content:answer,reasoning:reasoning}, httpStatus:res.status, validationResult:{valid:true}}});
+          traceId = '';
+        }
+        answer = accumulatedRawText = reasoning = tagReasoning = debugRawText = '';
+        debugParsed = usageInfo = null;
+        responseMsg.content = '';
+        ['reasoning', 'nativeReasoning', 'tagReasoning'].forEach(function (key) { delete responseMsg[key]; });
+        syncResponseView();
+        // 排除本轮占位消息及后续楼层，绝不把哨兵回灌给主 AI。
+        var v4History = targetMessages.slice(0, targetMessages.indexOf(assistantMsg));
+        assembled = assembleRequestContext(session, v4History, params, cutoffUserIndex, summarizedFloorCursor, preparedPreset, retrievalTriggers, retrievalBookId, targetSubChatId, autoTitleTarget,
+          {extraRecallIds:v4ExtraRecallIds, forbidFurtherRecall:v4RecallDepth > 0});
+        requestMessages = assembled.apiMessages;
+        originalRequestMessages = requestMessages.slice();
+        prefillPrefix = assembled.prefillPrefix;
+        triggeredEntryNames = assembled.triggeredEntryNames;
+        triggeredEntryDetails = assembled.triggeredEntries;
+        retryCount = 0;
+        if (isStreamMode && task.isViewingTarget()) bubble.classList.add('streaming');
+        continue;
+      }
+      if (v4RecallEnabled) {
+        if (v4RecallDepth === 0 && shouldHoldV4Recall(answer) && stripMemoryV4LeadingThinking(answer).trim()) {
+          answer = accumulatedRawText = reasoning = '';
+        } else {
+          answer = accumulatedRawText = cleanV4Recall(answer);
+          roundText = cleanV4Recall(roundText);
+        }
+      }
       // 暗号优先于 finish_reason；stop 不能代替完整性验收。
       var hasEndTag = /<mychat_end\/?>/.test(accumulatedRawText);
       var visibleRoundText = stripAntiTruncateTag(stripChatTitle(roundText)).trim();
@@ -11298,6 +11408,10 @@
       if (isStreamMode && task.isViewingTarget()) bubble.classList.add('streaming');
       }
     } catch (err) {
+      if (v4RecallEnabled) {
+        if (v4RecallDepth === 0 && shouldHoldV4Recall(answer) && stripMemoryV4LeadingThinking(answer).trim()) answer = reasoning = tagReasoning = '';
+        else answer = cleanV4Recall(answer);
+      }
       task.error = err && err.message ? err.message : String(err);
       var errorText = task.error;
       bubble.classList.remove('streaming');
@@ -11363,7 +11477,7 @@
       // 完整响应先提取标题，再剥离标签；失败 / 中止仅清理正文，不提交起名。
       var titleMatch = autoTitleTarget && answer.match(/<chat_title>([\s\S]*?)<\/chat_title>/);
       var generatedTitle = titleMatch ? titleMatch[1].trim().replace(/[\r\n]+/g, '') : '';
-      answer = stripAntiTruncateTag(stripChatTitle(answer));
+      answer = cleanV4Recall(stripAntiTruncateTag(stripChatTitle(answer)));
       if (autoTitleTarget && !task.error && !task.controller.signal.aborted &&
           getSession(session.id) === targetSession &&
           session.subChats.indexOf(opts.targetSubChat) !== -1 &&
@@ -11392,7 +11506,7 @@
           session: session,
           msg: targetSwipeIndex === null ? assistantMsg : Object.assign({}, assistantMsg, responseMsg)
         });
-        if (typeof receivedText === 'string') answer = receivedText;
+        if (typeof receivedText === 'string') answer = cleanV4Recall(receivedText);
         responseMsg.content = answer;
       }
 
@@ -11409,7 +11523,7 @@
         answer = responseMsg.content;
       }
 
-      responseMsg.content = stripAntiTruncateTag(responseMsg.content);
+      responseMsg.content = cleanV4Recall(stripAntiTruncateTag(responseMsg.content));
 
       // 仅提交冻结目标；结束或失败都保留用户选择。
       if (targetSwipeIndex !== null && Array.isArray(assistantMsg.swipes)) {
