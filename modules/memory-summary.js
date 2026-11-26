@@ -331,6 +331,30 @@
   // 通用模式只使用原子条目，不参与总纲 / EVT 世界书召回。
   var GENERAL_CATEGORIES = ['user_and_rules', 'facts_and_context', 'progress_and_conclusions', 'current_focus'];
   var GENERAL_CATEGORY_TITLES = ['用户画像与沟通规范', '基础事实与环境背景', '进展脉络与已验证结论', '当前焦点与待办事项'];
+  var GENERAL_ID_PREFIXES = {user_and_rules:'U', facts_and_context:'F', progress_and_conclusions:'P', current_focus:'C'};
+
+  function normalizeGeneralNextIds(state) {
+    var saved = state.generalNextIds || {}, nextIds = {};
+    GENERAL_CATEGORIES.forEach(function (category) {
+      var prefix = GENERAL_ID_PREFIXES[category];
+      var next = Number.isSafeInteger(saved[category]) && saved[category] > 0 ? saved[category] : 1;
+      (state.generalItems || []).forEach(function (item) {
+        // 保留旧 M 编号供更新 / 删除引用，新编号按原分类最大序号续接。
+        var match = String(item.id || '').match(/^([MUFPC])(\d+)$/);
+        if (match && (match[1] === prefix || (match[1] === 'M' && item.category === category))) {
+          var number = Number(match[2]);
+          if (Number.isSafeInteger(number) && number < Number.MAX_SAFE_INTEGER) next = Math.max(next, number + 1);
+        }
+      });
+      nextIds[category] = next;
+    });
+    state.generalNextIds = nextIds;
+  }
+
+  function allocateGeneralId(state, category) {
+    normalizeGeneralNextIds(state);
+    return GENERAL_ID_PREFIXES[category] + state.generalNextIds[category]++;
+  }
 
   function formatGeneralItems(items, includeEmpty, includeCategoryKeys) {
     return GENERAL_CATEGORIES.map(function (category, index) {
@@ -386,7 +410,7 @@
       else if (operation.type === 'update') {
         var item = state.generalItems.find(function (entry) { return entry.id === operation.id; });
         if (item) { item.content = operation.content; item.updatedAt = now; }
-      } else state.generalItems.push({id:'M' + state.generalNextId++, category:operation.category, content:operation.content, updatedAt:now});
+      } else state.generalItems.push({id:allocateGeneralId(state, operation.category), category:operation.category, content:operation.content, updatedAt:now});
     });
     state.lastScratchpad = parsed._digestScratchpad;
     data.digestScratchpad = parsed._digestScratchpad;
@@ -400,7 +424,9 @@
 
   function createDefaultMemoryState(mode = 'rp') {
     return { mode: normalizeMemoryMode(mode), sceneState: '', characters: {}, worldAndLore: {},
-      activeArc: '', completedArcs: [], events: {}, generalItems: [], generalNextId: 1, lastScratchpad: '', lastRoutingAnalysis: '' };
+      activeArc: '', completedArcs: [], events: {}, generalItems: [], generalNextId: 1,
+      generalNextIds: {user_and_rules:1, facts_and_context:1, progress_and_conclusions:1, current_focus:1},
+      lastScratchpad: '', lastRoutingAnalysis: '' };
   }
 
   function normalizeEventObject(evt) {
@@ -506,6 +532,7 @@
       data.memoryState.lastRoutingAnalysis = originalState.lastRoutingAnalysis;
       data.memoryState.generalItems = deepCopy(originalState.generalItems || []);
       data.memoryState.generalNextId = originalState.generalNextId;
+      data.memoryState.generalNextIds = deepCopy(originalState.generalNextIds || {});
     }
     var treeEventsChanged = previous && previous.events !== JSON.stringify(data.memoryState && data.memoryState.events);
     var legacyEventsChanged = previous && previous.entries !== JSON.stringify(data.eventEntries);
@@ -520,6 +547,7 @@
     state.generalItems = deepCopy(Array.isArray(state.generalItems) ? state.generalItems : []);
     state.generalNextId = Math.max(Number.isSafeInteger(state.generalNextId) && state.generalNextId > 0 ? state.generalNextId : 1,
       state.generalItems.reduce(function (next, item) { return /^M\d+$/.test(item.id) ? Math.max(next, Number(item.id.slice(1)) + 1) : next; }, 1));
+    normalizeGeneralNextIds(state);
     var source = treeEventsChanged ? Object.values(state.events || {}) : aliasEventsChanged ? data.events : legacyEventsChanged ? data.eventEntries :
       Object.keys(state.events || {}).length ? Object.values(state.events) : Array.isArray(data.events) ? data.events : data.eventEntries || [];
     var dictionary = {};
@@ -2404,7 +2432,7 @@
         content = content.trim();
         if (!content) { notify('内容不能为空'); return; }
         commit(function (current) {
-          current.generalItems.push({id:'M' + current.generalNextId++, category:category, content:content, updatedAt:Date.now()});
+          current.generalItems.push({id:allocateGeneralId(current, category), category:category, content:content, updatedAt:Date.now()});
         }, '记忆已新增');
       });
       if (!items.length) section.insertAdjacentHTML('beforeend', '<p class="ms-general-empty">暂无条目</p>');
@@ -2630,8 +2658,8 @@
     generalAuto.hidden = !general;
     [consoleEls.recall.closest('label'), consoleEls.maxRecall.closest('.ms-inline'),
       consoleEls.recentEvents.closest('.ms-inline'), consoleEls.recallRetry.closest('.ms-inline'),
-      modal.querySelector('#ms-recent-events-hint'), modal.querySelector('#ms-test-recall'),
-      modal.querySelector('.ms-batch-panel')].forEach(function (element) { element.hidden = general; });
+      modal.querySelector('#ms-recent-events-hint'), modal.querySelector('#ms-test-recall')
+      ].forEach(function (element) { element.hidden = general; });
     modal.querySelector('label[for="ms-target"]').textContent = general ? '总结模型' : '总结 / 检索使用的模型';
     consoleEls.tabs.querySelector('[data-tab="overview"]').textContent = general ? '记忆条目' : '常驻总纲';
     consoleEls.tabs.querySelector('[data-tab="events"]').hidden = general;

@@ -11223,11 +11223,12 @@
     if (msg.role === 'user') return msg.content || '';
 
     var content = msg.content || '';
-    var reasoning = typeof msg.reasoning === 'string' ? msg.reasoning : '';
+    var reasoning = (typeof msg.reasoning === 'string' && msg.reasoning) ||
+      (typeof msg.nativeReasoning === 'string' ? msg.nativeReasoning : '');
     if (!reasoning) return content;
     // 正文里已经内嵌思维链标签：原样返回，避免重复包裹
     if (splitLeadingThink(content).hasThink) return content;
-    return THINK_OPEN_TAG + reasoning + THINK_CLOSE_TAG + '\n' + content;
+    return '<think>' + reasoning + '</think>\n' + content;
   }
 
   /**
@@ -12213,6 +12214,66 @@
   }
 
   // === [ANCHOR: INIT_EVENTS] 全局事件绑定与初始化入口 ===
+  // 划选复制仅补齐列表标记，不修改消息或原始 DOM。
+  function handleChatSelectionCopy(e) {
+    var selection = window.getSelection();
+    if (!e.clipboardData || !selection || selection.isCollapsed || selection.rangeCount !== 1) return;
+    var range = selection.getRangeAt(0);
+    function element(node) { return node.nodeType === 1 ? node : node.parentElement; }
+    var start = element(range.startContainer), end = element(range.endContainer);
+    if (!start || !end || start.closest('textarea,input') || end.closest('textarea,input')) return;
+    var body = start.closest('.bubble .md-body');
+    if (!body || !els.chatArea.contains(body) || !body.contains(end)) return;
+    var code = start.closest('pre,code');
+    if (code && code.contains(end)) return;
+    var fragment = range.cloneContents();
+    var items = Array.from(fragment.querySelectorAll('li'));
+    if (!items.length) return;
+    // 克隆片段可能丢失外层 ol；按原选区中的对应节点读取真实编号。
+    var common = range.commonAncestorContainer;
+    var originals = common.querySelectorAll ? Array.from(common.querySelectorAll('li')).filter(function (li) {
+      return range.intersectsNode(li);
+    }) : [];
+    if (originals.length !== items.length) return;
+    var metadata = new Map();
+    function depth(li) {
+      var count = 0;
+      for (var parent = li.parentElement; parent && parent !== body; parent = parent.parentElement) {
+        if (parent.tagName === 'OL' || parent.tagName === 'UL') count++;
+      }
+      return count;
+    }
+    var baseDepth = Math.min.apply(null, originals.map(depth));
+    items.forEach(function (li, index) {
+      var original = originals[index], list = original.parentElement, prefix = '- ';
+      if (list.tagName === 'OL') {
+        var siblings = Array.from(list.children).filter(function (child) { return child.tagName === 'LI'; });
+        var number = list.hasAttribute('start') ? Number(list.getAttribute('start')) : 1;
+        if (!Number.isFinite(number)) number = 1;
+        prefix = (number + siblings.indexOf(original)) + '. ';
+      }
+      metadata.set(li, {prefix:prefix, indent:'  '.repeat(Math.max(0, depth(original) - baseDepth))});
+    });
+    function serialize(node) {
+      if (node.nodeType === 3) return node.nodeValue.replace(/\s+/g, ' ');
+      if (node.nodeType !== 1 && node.nodeType !== 11) return '';
+      var tag = node.tagName;
+      if (tag === 'BR') return '\n';
+      if (tag === 'PRE') return '\n' + node.textContent + '\n';
+      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'TEXTAREA' || tag === 'INPUT') return '';
+      var text = Array.from(node.childNodes).map(serialize).join('');
+      if (tag === 'LI') {
+        var info = metadata.get(node);
+        return '\n' + info.indent + info.prefix + text.trim() + '\n';
+      }
+      if (tag === 'OL' || tag === 'UL') return '\n' + text.replace(/^\n+|\n+$/g, '') + '\n';
+      return /^(P|H[1-6]|DIV|BLOCKQUOTE)$/.test(tag) ? '\n' + text.trim() + '\n' : text;
+    }
+    var formattedText = serialize(fragment).replace(/ *\n[ \t]*\n/g, '\n').replace(/[^\S\n]+\n/g, '\n').trim();
+    e.clipboardData.setData('text/plain', formattedText);
+    e.preventDefault();
+  }
+
   // 浮层历史仅记录开关变化，兼容宿主 show 类及模块 hidden 类。
   var isHandlingPopState = false;
   var isClosingOverlayFromUI = false;
@@ -12749,6 +12810,7 @@
     // 消息区：四大操作（复制 / 修改 / 重新回复 / 删除）事件委托
     if (els.chatArea) {
       els.chatArea.addEventListener('click', handleMessageAction);
+      els.chatArea.addEventListener('copy', handleChatSelectionCopy);
       // 触摸屏（无悬浮能力）：点击气泡切换操作栏显示
       els.chatArea.addEventListener('click', toggleActionsOnTouch);
       // 智能跟随滚动：监听用户滚动，判断是否需要暂停自动跟随
