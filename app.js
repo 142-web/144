@@ -10042,6 +10042,19 @@
       if (current) dialogMsgs.push(current);
       result = systemMsgs.concat(dialogMsgs);
     }
+    // 通用记忆在裁剪后按原始楼层钉住，不随已总结旧楼层被裁掉。
+    var memoryModule = window.MemorySummaryModule;
+    var generalMemory = macroSession && memoryModule && typeof memoryModule.getGeneralMemoryInjection === 'function'
+      ? memoryModule.getGeneralMemoryInjection(macroSession, owner) : null;
+    if (generalMemory) {
+      var insertIdx = result.findIndex(function (entry) { return entry._floor > generalMemory.cursor; });
+      if (insertIdx < 0) {
+        insertIdx = result.length;
+        var last = result[result.length - 1];
+        if (last && typeof cutoffIndex === 'number' && last.role === 'user' && last._floor === Math.floor(cutoffIndex) + 1) insertIdx--;
+      }
+      result.splice(insertIdx, 0, {role:'system', content:generalMemory.content});
+    }
     // 楼层辅助字段仅供本轮裁剪，绝不泄漏到模型载荷。
     result.forEach(function (entry) { delete entry._floor; });
     return result;
