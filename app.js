@@ -29,6 +29,7 @@
   var PROVIDERS_KEY = 'mychat_providers';    // 多渠道数组（新版）
   var ACTIVE_TARGET_KEY = 'mychat_active_target'; // 当前选中的 { providerId, modelId }
   var SESSIONS_KEY = 'mychat_sessions';      // 全部会话（数组）
+  var STATE_STORAGE = { conferences: 'mychat_conferences' }; // 会议记录集中登记
   var CURRENT_ID_KEY = 'mychat_current_id';  // 当前选中会话的 id
   var LAST_MODIFIED_KEY = 'mychat_last_modified'; // 全局最后修改时间戳（毫秒）
   var LAST_SYNCED_CLOUD_STAMP_KEY = 'mychat_last_synced_cloud_stamp'; // 本设备云端一致性基准，不云同步
@@ -1228,6 +1229,42 @@
       return { sessions: added.length, presets: addedPresets.length, ids: added.map(function (s) { return s.id; }) };
     },
 
+    // 会议模块只经桥接读写，不共享宿主私有状态。
+    getConferences: function () {
+      var list = readStorageValue(STATE_STORAGE.conferences);
+      return Array.isArray(list) ? JSON.parse(JSON.stringify(list)) : [];
+    },
+    saveConferences: function (list) {
+      if (!Array.isArray(list) || !writeStorageValue(STATE_STORAGE.conferences, list)) return false;
+      if (!isBooting && !applyingCloudData && isStartupSyncSettled) {
+        touchLastModified();
+        scheduleCloudUpload();
+      }
+      return true;
+    },
+    createEmptySession: function (name) {
+      var snapshot = createStorageSnapshot();
+      try {
+        var session = createSession(false);
+        session.title = String(name || '').trim() || DEFAULT_TITLE;
+        requireStorageWrite(MyChatBridge.saveSession(session, { background: true }));
+        renderMessages();
+        refreshQuickParamsPanel();
+        refreshPresetButtonState();
+        return session;
+      } catch (err) {
+        restoreStorageSnapshot(snapshot);
+        renderSessionList();
+        renderMessages();
+        throw err;
+      }
+    },
+    sendToSessionAndWait: async function (sessionId, userText, options = {}) {
+      return runSessionAndWait(sessionId, userText, options, false);
+    },
+    retryLastInSessionAndWait: async function (sessionId, options = {}) {
+      return runSessionAndWait(sessionId, null, options, true);
+    },
     // 新建会话并返回会话对象（供角色卡导入器使用）
     createSession: function (switchView) {
       return createSession(switchView !== false);
@@ -10318,13 +10355,63 @@
    *        （存在且该位置是 assistant 时直接复用该条消息，避免新增楼层）
    * @param {boolean} [options.keepScroll] true 表示流式过程中不强行滚动到聊天室最底部
    */
+  // 指定会话入口冻结活跃分区；保存失败不发送，也不留下重复用户楼层。
+  async function runSessionAndWait(sessionId, userText, options, retry) {
+    var session = getSession(sessionId);
+    var failure = function (error) { return { error: error, content: '', msg: null, aborted: true }; };
+    if (!session) return failure('SESSION_NOT_FOUND');
+    var subChatId = getActiveSubChatId(session);
+    if (activeGenerationMap.has(generationKey(session.id, subChatId)) ||
+        pendingReplyPolicies.has(generationKey(session.id, subChatId))) return failure('CHANNEL_BUSY');
+    var messages = getSubChatMessages(session, subChatId);
+    if (!messages) return failure('CHANNEL_NOT_FOUND');
+    var cutoffUserIndex = -1;
+    var removed = [];
+    var appended = null;
+    if (retry) {
+      for (var i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'user') { cutoffUserIndex = i; break; }
+      }
+      if (cutoffUserIndex < 0) return failure('USER_MESSAGE_NOT_FOUND');
+      // 只清理失败或未完成占位；已完成回复交给原位覆盖链路保护。
+      for (var j = messages.length - 1; j > cutoffUserIndex; j--) {
+        var msg = messages[j];
+        if (msg.role === 'assistant' && (msg.generationError || msg._pending || !String(msg.content || '').trim())) {
+          removed.unshift({ index: j, msg: msg });
+          messages.splice(j, 1);
+        }
+      }
+    } else {
+      if (typeof userText !== 'string' || !userText.trim()) return failure('EMPTY_MESSAGE');
+      appended = { id: genId(), role: 'user', content: userText, createdAt: Date.now() };
+      messages.push(appended);
+      cutoffUserIndex = messages.length - 1;
+    }
+    if (!MyChatBridge.saveSession(session, { background: true })) {
+      if (appended) messages.splice(messages.indexOf(appended), 1);
+      removed.forEach(function (entry) { messages.splice(entry.index, 0, entry.msg); });
+      return failure('STORAGE_WRITE_FAILED');
+    }
+    var opts = Object.assign({}, options, { subChatId: subChatId, cutoffUserIndex: cutoffUserIndex });
+    // 不允许调用方指定其他消息载体或分支，确保只重答最后的用户楼层。
+    delete opts.targetMessages;
+    delete opts.reuseIndex;
+    opts.swipeBranch = false;
+    if (retry && messages[cutoffUserIndex + 1] && messages[cutoffUserIndex + 1].role === 'assistant') {
+      opts.reuseIndex = cutoffUserIndex + 1;
+    }
+    return await requestAssistantReply(session, opts);
+  }
+
   async function requestAssistantReply(session, options) {
-    if (!session) return;
+    if (!session) return { error: 'SESSION_NOT_FOUND', content: '', msg: null, aborted: true };
     var opts = Object.assign({}, options || {});
     var subId = opts.subChatId || getActiveSubChatId(session);
     var messages = getSubChatMessages(session, subId);
     var key = generationKey(session.id, subId);
-    if (!messages || isChannelGenerating(session.id, subId) || pendingReplyPolicies.has(key)) return;
+    if (!messages || isChannelGenerating(session.id, subId) || pendingReplyPolicies.has(key)) {
+      return { error: 'CHANNEL_BUSY', content: '', msg: null, aborted: true };
+    }
     if (typeof opts.cutoffUserIndex !== 'number') {
       for (var u = messages.length - 1; u >= 0; u--) {
         if (messages[u].role === 'user') { opts.cutoffUserIndex = u; break; }
@@ -10332,22 +10419,34 @@
     }
     var sourceUser = typeof opts.cutoffUserIndex === 'number' ? messages[opts.cutoffUserIndex] : null;
     var run = { cancelled:false };
+    var lastResult = { error: 'GENERATION_CANCELLED', content: '', msg: null, aborted: true };
     pendingReplyRuns.set(key, run);
     var policy = runPipeline('replyPolicy', {}, { session: session, subChatId: subId, key: key });
     var attempt = async function (signal, previous) {
       if (run.cancelled || getSession(session.id) !== session || getSubChatMessages(session, subId) !== messages ||
-          (sourceUser && messages[opts.cutoffUserIndex] !== sourceUser)) return;
+          (sourceUser && messages[opts.cutoffUserIndex] !== sourceUser)) {
+        lastResult = { error: 'GENERATION_CANCELLED', content: '', msg: null, aborted: true };
+        return;
+      }
       var next = Object.assign({}, opts, { subChatId: subId, targetMessages: messages, signal: signal });
       if (previous && previous.msg) {
         var index = messages.indexOf(previous.msg);
         if (index >= 0) { next.reuseIndex = index; next.swipeBranch = false; }
       }
-      return requestAssistantAttempt(session, next);
+      var result;
+      try { result = await requestAssistantAttempt(session, next); }
+      catch (err) { result = { error: err.message || String(err), aborted: !!(signal && signal.aborted) }; }
+      lastResult = Object.assign({ error: '', content: '', msg: null, aborted: false }, result || {
+        error: 'GENERATION_CANCELLED', aborted: true
+      });
+      return lastResult;
     };
     pendingReplyPolicies.add(key);
     try {
       if (policy && typeof policy.run === 'function') await policy.run(attempt);
       else await attempt();
+      if (run.cancelled) lastResult = Object.assign({}, lastResult, { aborted: true });
+      return lastResult;
     } finally {
       if (pendingReplyRuns.get(key) === run) {
         pendingReplyRuns.delete(key); pendingReplyPolicies.delete(key);
@@ -10402,7 +10501,7 @@
     var target = resolveActiveTarget();
     if (!target) {
       void window.showAppAlert('请先配置渠道与模型');
-      return;
+      return { error: '请先配置渠道与模型', content: '', msg: null, aborted: false };
     }
     var activeProvider = target.provider;
     var activeModel = target.model;
@@ -11759,6 +11858,7 @@
       currentId: currentId || '',
       sessions: serializeSessions(),
       globalTavernVars: MyChatBridge.getGlobalTavernVars(),
+      conferences: MyChatBridge.getConferences(),
       // 渠道与模型配置（含名称、接口地址、API Key、别名与三档单价）
       providers: providers,
       // 当前选中的渠道与模型
@@ -11840,7 +11940,8 @@
     var keys = [CONFIG_KEY, SYNC_CONFIG_KEY, PROVIDERS_KEY, ACTIVE_TARGET_KEY, SESSIONS_KEY, CURRENT_ID_KEY,
       LAST_MODIFIED_KEY, THEME_KEY, VIEW_KEY, CHAT_PARAMS_KEY, PROMPT_PRESETS_KEY,
       REGEX_RULES_KEY, WORLDBOOKS_KEY, VOCAB_RULES_KEY, QUICK_REPLIES_KEY,
-      GLOBAL_TAVERN_VARS_KEY, AUTO_RETRY_KEY, IMAGE_GEN_CONFIG_KEY, CLOUD_HISTORY_CONFIG_KEY, CLOUD_MIRROR_KEY];
+      GLOBAL_TAVERN_VARS_KEY, AUTO_RETRY_KEY, IMAGE_GEN_CONFIG_KEY, CLOUD_HISTORY_CONFIG_KEY, CLOUD_MIRROR_KEY,
+      STATE_STORAGE.conferences];
     var storage = {};
     keys.forEach(function (key) { storage[key] = localStorage.getItem(key); });
     return { storage: storage, cache: new Map(storageCache), memory: JSON.parse(JSON.stringify({config: config,
@@ -11917,6 +12018,7 @@
     [window.MyChatWorldbook, window.MyChatVocab, window.MyChatQuickReplies, window.MyChatAutoRetry].forEach(function (module) {
       if (module && typeof module.reload === 'function') module.reload();
     });
+    window.MyChatConference?.reloadFromStorage?.();
   }
 
   function applyCloudData(payload, options = {}) {
@@ -12013,6 +12115,11 @@
   function applyCloudExtras(payload, options = {}) {
     if (!payload || typeof payload !== 'object') return;
 
+    // 旧包缺字段不覆盖；显式空数组允许清空，错误类型触发完整事务回滚。
+    if (Object.prototype.hasOwnProperty.call(payload, 'conferences')) {
+      if (!Array.isArray(payload.conferences)) throw new Error('会议数据必须为数组');
+      requireStorageWrite(writeStorageValue(STATE_STORAGE.conferences, payload.conferences));
+    }
     if (payload.cloudHistoryConfig && typeof payload.cloudHistoryConfig === 'object') {
       requireStorageWrite(writeStorageValue(CLOUD_HISTORY_CONFIG_KEY, normalizeCloudHistoryConfig(payload.cloudHistoryConfig)));
     }
